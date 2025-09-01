@@ -1,2 +1,2 @@
 #include "Kerbecs.h"
-void Kerbecs Init() {}
+void KERBECS Init() {}

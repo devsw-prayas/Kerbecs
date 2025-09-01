@@ -1,5 +1,5 @@
 #pragma once
-#ifndef Kerbecs
-#define Kerbecs __declspec(dllexport)
+#ifndef KERBECS
+#define KERBECS __declspec(dllexport)
 #endif
-void Kerbecs Init();
+void KERBECS Init();
