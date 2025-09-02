@@ -61,5 +61,10 @@ namespace Kerbecs::Memory {
 	constexpr size_t MEBI_BYTE = 1_MiB;
 	constexpr size_t GIBI_BYTE = 1_GiB;
 
-	void* reserve(size_t v_Bytes);
+	inline void* KERBECS allocate(size_t v_Bytes);
+	inline void* KERBECS reserve(size_t v_Bytes);
+	inline bool KERBECS commit(void* p_Memory, size_t v_Bytes, size_t v_Offset);
+	inline bool KERBECS decommit(void* p_Memory, size_t v_Bytes, size_t v_Offset);
+	inline bool KERBECS release(void* p_Memory, size_t v_Bytes);
 }
+ 

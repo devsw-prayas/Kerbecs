@@ -1,0 +1,34 @@
+#include "Kerbecs.h"
+#include  "Memory.h"
+#include "MemoryZone.h"
+
+#include <cstddef>
+
+#if defined(_WIN32)
+#include <Windows.h>
+#elif defined(__linux__)
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <time.h>
+#include <sched.h>
+#endif
+
+namespace Kerbecs::MemoryZone {
+	bool KerbecsMemoryZone::init() {
+		size_t totalBytes = SHADOWZONE_SIZE * Memory::GIBI_BYTE + GLOBALZONE_SIZE * Memory::GIBI_BYTE;
+		bool reserved = true;
+#if defined(_WIN32)
+		m_MemoryZone = VirtualAlloc(reinterpret_cast<void*>(MEMORY_ZONE_ADDRESS), totalBytes, MEM_RESERVE, PAGE_NOACCESS);
+		reserved = m_MemoryZone != nullptr;
+#elif defined(__linux__)
+		m_MemoryZone = mmap(reinterpret_cast<void*>(MEMORY_ZONE_ADDRESS), totalBytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		reserved = m_MemoryZone != MAP_FAILED;
+#endif
+		if (!reserved) m_MemoryZone = Memory::reserve(totalBytes);	
+		if (!m_MemoryZone) return m_Initialized = false;
+		m_ShadowZone = m_MemoryZone;
+		m_GlobalZone = reinterpret_cast<std::byte*>(m_ShadowZone) + SHADOWZONE_SIZE * Memory::GIBI_BYTE;
+		return m_Initialized = true;
+	}
+}
