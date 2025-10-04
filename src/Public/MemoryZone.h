@@ -1,11 +1,33 @@
+/*
+* Copyright (c) 2025 StormWeaver
+*
+* This file is part of the Kerbecs Address Sanitizer API
+*
+* Licensed under the MIT License. You may obtain a copy of the License at
+* https://opensource.org/licenses/MIT
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy
+* of this software and associated documentation files (the "Software"), to deal
+* in the Software without restriction, including without limitation the rights
+* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+* copies of the Software, and to permit persons to whom the Software is
+* furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in all
+* copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...
+*/
 #pragma once
+#include <cstdint>
+
 #include "Kerbecs.h"
 
 namespace Kerbecs::MemoryZone {
 
 	typedef void* RAW;
 
-	constexpr size_t MEMORY_ZONE_ADDRESS = 0x0000100000000000; //Preferred by Kerbecs
+	constexpr uintptr_t MEMORY_ZONE_ADDRESS = 0x0000100000000000; //Preferred by Kerbecs
 	constexpr size_t POISON_NON_HEAP = 0xfa;
 	constexpr size_t POISON_HEAP = 0xfb;
 	constexpr size_t UNPOISONED_NON_HEAP = 0x0a;
@@ -75,7 +97,6 @@ namespace Kerbecs::MemoryZone {
 		RAW m_ShadowzoneMappingPtr;
 		size_t m_Alignment;
 		EnhancedOffsets m_Offsets;
-
 	};
 
 	inline KERBECS KerbecsMemoryZone& instance() {
@@ -87,7 +108,7 @@ namespace Kerbecs::MemoryZone {
 	void initializeShadow(Shadow& ro_Shadow) {
 		ro_Shadow.m_Alignment = Alignment;
 		ro_Shadow.m_Offsets.m_MetaDataOffset = 0;
-		ro_Shadow.m_Offsets.m_RedzoneOffsetLeading = 0;
+		ro_Shadow.m_Offsets.m_RedzoneOffsetLeading = 0;6
 		ro_Shadow.m_Offsets.m_RedzoneOffsetTrailing = 0;
 		ro_Shadow.m_Offsets.m_UserDataOffset = 0;
 		ro_Shadow.m_ShadowzoneMappingPtr = nullptr;

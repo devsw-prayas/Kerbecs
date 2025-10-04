@@ -17,6 +17,8 @@ target_include_directories(Kerbecs PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Public)
 
 set_target_properties(Kerbecs PROPERTIES FOLDER "Base")
+target_precompile_headers(Kerbecs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/Public/Kerbecs.h)
+
 
 add_compile_definitions(ENABLE_EVENT_EMITTERS_KERBECS=1)
 add_compile_definitions(SHADOWZONE_SIZE=1500) # In Gigabytes

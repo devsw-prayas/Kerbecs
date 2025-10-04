@@ -47,24 +47,30 @@ namespace Kerbecs::Memory {
 		return v_GiB * 1024ULL * 1024ULL * 1024ULL;
 	}
 
-	constexpr size_t PAGE_FILE = 4_KiB;
+	constexpr size_t KERBECS PAGE_FILE = 4_KiB;
 
-	constexpr size_t alignToPage(unsigned long long v_Bytes) {
+	constexpr size_t KERBECS alignToPage(unsigned long long v_Bytes) {
 		return (v_Bytes + PAGE_FILE - 1) / PAGE_FILE * PAGE_FILE;
 	}
 
-	constexpr size_t KILO_BYTE = 1_KB;
-	constexpr size_t MEGA_BYTE = 1_MB;
-	constexpr size_t GIGA_BYTE = 1_GB;
+	constexpr size_t KERBECS KILO_BYTE = 1_KB;
+	constexpr size_t KERBECS MEGA_BYTE = 1_MB;
+	constexpr size_t KERBECS GIGA_BYTE = 1_GB;
 
-	constexpr size_t KIBI_BYTE = 1_KiB;
-	constexpr size_t MEBI_BYTE = 1_MiB;
-	constexpr size_t GIBI_BYTE = 1_GiB;
+	constexpr size_t KERBECS KIBI_BYTE = 1_KiB;
+	constexpr size_t KERBECS MEBI_BYTE = 1_MiB;
+	constexpr size_t KERBECS GIBI_BYTE = 1_GiB;
+
+	enum class KERBECS PageState: uint8_t {
+		FREE, RESERVED, COMMITTED, UNKNOWN
+	};
 
 	inline void* KERBECS allocate(size_t v_Bytes);
 	inline void* KERBECS reserve(size_t v_Bytes);
 	inline bool KERBECS commit(void* p_Memory, size_t v_Bytes, size_t v_Offset);
 	inline bool KERBECS decommit(void* p_Memory, size_t v_Bytes, size_t v_Offset);
 	inline bool KERBECS release(void* p_Memory, size_t v_Bytes);
+
+	inline [[nodiscard]] PageState KERBECS queryPage(const void* p_Memory);
 }
  
