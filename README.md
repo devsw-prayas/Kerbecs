@@ -65,9 +65,11 @@ PAYLOAD → [shadow bytes covering payload only]
 ### Initialization
 ```cpp
 // Normal mode
+template<typename T>
 bool init(SHP shadow, void* memory, size_t blockSize, size_t count=1);
 
 // Enhanced mode
+template<typename T>
 bool init(ESHP shadow, void* memory, size_t blockSize, size_t count=1);
 ```
 
@@ -99,16 +101,58 @@ It’s a watchdog — tuned for HPC and systems development where full ASan over
 
 ---
 
+## 🛠 Requirements
+
+- **OS:**  
+  - Windows 10/11 (MSVC 2022+)  
+  - Linux (GCC 11+ / Clang 13+)  
+  - macOS (Clang 13+)  
+
+- **Compiler:** Must support **C++20** (`concepts`, `std::bit_cast`, `alignas`, `constexpr`, etc.).  
+- **Build System:** [CMake](https://cmake.org/) 3.20+  
+- **Optional:**  
+  - Visual Studio 2022 (Windows IDE integration)  
+  - Clang-Tidy / cppcheck for static analysis  
+
+---
+
 ## 📦 Building
 
-Kerbecs uses **CMake**. Shadowzone sizes are passed as compile-time constants:
+1. **Clone the repo**
+   ```bash
+   git clone https://github.com/yourname/Kerbecs.git
+   cd Kerbecs
+   ```
 
-```cmake
-add_compile_definitions(
-  KERBECS_SHADOWZONE_SIZE=$<1.5_TiB>
-  KERBECS_GLOBALZONE_SIZE=$<0.5_TiB>
-)
-```
+2. **Configure with CMake**
+   Kerbecs requires you to define the shadowzone and globalzone sizes at compile time.  
+   The total memory zone is `SHADOWZONE_SIZE + GLOBALZONE_SIZE`.  
+
+   Example configuration in `CMakeLists.txt`:
+   ```cmake
+   add_compile_definitions(
+     SHADOWZONE_SIZE=1500  # in GiB
+     GLOBALZONE_SIZE=500   # in GiB
+   )
+   ```
+
+   Or via CLI:
+   ```bash
+   cmake -B build -S .      -DCMAKE_BUILD_TYPE=Release      -DSHADOWZONE_SIZE=1500      -DGLOBALZONE_SIZE=500
+   ```
+
+   This will produce a **2 TiB memory zone**:  
+   - 1500 GiB reserved for **shadowzone**  
+   - 500 GiB reserved for **globalzone**  
+
+3. **Build**
+   ```bash
+   cmake --build build --config Release
+   ```
+
+4. **Link into your project**
+   - Headers in `include/`  
+   - Static lib: `libKerbecs.a` (Linux/macOS) / `Kerbecs.lib` (Windows)  
 
 ---
 
