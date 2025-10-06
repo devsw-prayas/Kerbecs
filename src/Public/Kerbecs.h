@@ -25,3 +25,5 @@
 #endif
 void KERBECS Init();
 #include <cstdint>
+#include <bit>
+#include <new>

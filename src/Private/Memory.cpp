@@ -33,7 +33,7 @@
 #endif
 
 namespace Kerbecs::Memory {
-	void* KERBECS allocate(size_t v_Bytes) {
+	void*  allocate(size_t v_Bytes) {
 		void* memory = nullptr;
 #if defined(_WIN32)
 		memory = VirtualAlloc(nullptr, v_Bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -48,7 +48,7 @@ namespace Kerbecs::Memory {
 		return memory;
 	}
 
-	void* KERBECS reserve(size_t v_Bytes) {
+	void* reserve(size_t v_Bytes) {
 		void* memory = nullptr;
 #if defined(_WIN32)
 		memory = VirtualAlloc(nullptr, v_Bytes, MEM_RESERVE, PAGE_NOACCESS);
@@ -60,7 +60,7 @@ namespace Kerbecs::Memory {
 		return memory;
 	}
 
-	bool KERBECS commit(void* p_Memory, size_t v_Bytes, size_t v_Offset) {
+	bool commit(void* p_Memory, size_t v_Bytes, size_t v_Offset) {
 		auto memory = static_cast<std::byte*>(p_Memory);
 #if defined(_WIN32)
 		return VirtualAlloc(memory + v_Offset, v_Bytes, MEM_COMMIT, PAGE_READWRITE) != nullptr;
@@ -71,7 +71,7 @@ namespace Kerbecs::Memory {
 #endif
 	}
 
-	bool KERBECS decommit(void* p_Memory, size_t v_Bytes, size_t v_Offset) {
+	bool decommit(void* p_Memory, size_t v_Bytes, size_t v_Offset) {
 		auto memory = static_cast<std::byte*>(p_Memory);
 #if defined(_WIN32)
 		return VirtualFree(memory + v_Offset, v_Bytes, MEM_DECOMMIT) != 0;
@@ -109,4 +109,24 @@ namespace Kerbecs::Memory {
 		return PageState::FREE;
 #endif
 	}
+
+	void* allocateHeap(size_t v_Bytes) {
+#if defined(_WIN32)
+		void* memory = HeapAlloc(GetProcessHeap(), 0, v_Bytes);
+		return memory ? memory : nullptr;
+#elif defined(__linux__)
+		void* memory = malloc(v_Bytes);
+		return memory ? memory : nullptr;
+#endif
+	}
+
+	bool deallocateHeap(void* p_Memory) {
+#if defined(_WIN32)
+		return HeapFree(GetProcessHeap(), 0, p_Memory);
+#elif defined(__linux__)
+		free(p_Memory);
+		return true;
+#endif
+	}
+
 }

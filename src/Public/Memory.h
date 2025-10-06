@@ -65,12 +65,14 @@ namespace Kerbecs::Memory {
 		FREE, RESERVED, COMMITTED, UNKNOWN
 	};
 
-	inline void* KERBECS allocate(size_t v_Bytes);
-	inline void* KERBECS reserve(size_t v_Bytes);
+	inline KERBECS void* allocate(size_t v_Bytes);
+	inline KERBECS void*  reserve(size_t v_Bytes);
 	inline bool KERBECS commit(void* p_Memory, size_t v_Bytes, size_t v_Offset);
 	inline bool KERBECS decommit(void* p_Memory, size_t v_Bytes, size_t v_Offset);
 	inline bool KERBECS release(void* p_Memory, size_t v_Bytes);
 
+	inline KERBECS void* allocateHeap(size_t v_Bytes);
+	inline bool KERBECS deallocateHeap(void* p_Memory);
 	inline [[nodiscard]] PageState KERBECS queryPage(const void* p_Memory);
 }
  
