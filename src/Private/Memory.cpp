@@ -102,7 +102,7 @@ namespace Kerbecs::Memory {
 		if (mem.State & MEM_RESERVE) return PageState::RESERVED;
 		return PageState::FREE;
 #elif(__linux__)
-		usigned char vec;
+		unsigned char vec;
 		if (mincore((void*) ((uintptr_t) addr & ~(getpagesize() - 1)),
 			getpagesize(), &vec) == 0)
 			return (vec & 1) ? PageState::COMMITTED : PageState::RESERVED;

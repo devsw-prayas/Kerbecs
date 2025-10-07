@@ -23,7 +23,8 @@
 #ifndef KERBECS
 #define KERBECS __declspec(dllexport)
 #endif
-void KERBECS Init();
 #include <cstdint>
 #include <bit>
 #include <new>
+#include <algorithm>
+#include <cstddef>

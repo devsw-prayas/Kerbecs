@@ -20,8 +20,8 @@
 */
 #pragma once
 #include <cstdint>
-
 #include "Kerbecs.h"
+#include "Memory.h"
 
 namespace Kerbecs::MemoryZone {
 	typedef void* RAW;
@@ -31,11 +31,20 @@ namespace Kerbecs::MemoryZone {
 	constexpr size_t UNPOISONED = 0x0a;
 	constexpr size_t REDZONE = 0xfe;
 	constexpr size_t TOMBSTONE = 0xdd;
-	constexpr size_t GUARD_CANARY = 0xdead;
+	constexpr size_t GUARD_CANARY = 0xDEADBEEFCAFEBABEULL;
 	constexpr size_t SHADOW_SCALE = 3;
 
 	constexpr size_t REDZONE_SIZE = 16;
 	constexpr size_t CANARY_SIZE = 8;
+
+	constexpr size_t MASK_1 = 1;
+	constexpr size_t MASK_2 = MASK_1 << 1;
+	constexpr size_t MASK_4 = MASK_1 << 2;
+	constexpr size_t MASK_8 = MASK_1 << 3;
+	constexpr size_t MASK_16 = MASK_1 << 4;
+	constexpr size_t MASK_32 = MASK_1 << 5;
+	constexpr size_t MASK_64 = MASK_1 << 6;
+	constexpr size_t MASK_128 = MASK_1 << 7;
 
 	// [Size in Bytes]: 32
 	struct KERBECS alignas(32) NormalMetaData final {
@@ -61,6 +70,7 @@ namespace Kerbecs::MemoryZone {
 		void* m_ShadowZone;
 		void* m_GlobalZone;
 		bool m_Initialized;
+		bool m_Shutdown;
 
 		[[nodiscard]] bool init();
 	};
@@ -108,7 +118,7 @@ namespace Kerbecs::MemoryZone {
 	}
 
 	template<size_t Alignment>
-	void initializeShadow(Shadow& ro_Shadow) {
+	void KERBECS initializeShadow(Shadow& ro_Shadow) {
 		ro_Shadow.m_Alignment = Alignment;
 		ro_Shadow.m_Offsets.m_MetaDataOffset = 0;
 		ro_Shadow.m_Offsets.m_RedzoneOffsetLeading = 0;
@@ -119,7 +129,7 @@ namespace Kerbecs::MemoryZone {
 	}
 
 	template<size_t Alignment>
-	void initializeEnhancedShadow(EnhancedShadow& ro_EnhancedShadow) {
+	void KERBECS initializeEnhancedShadow(EnhancedShadow& ro_EnhancedShadow) {
 		ro_EnhancedShadow.m_Alignment = Alignment;
 		ro_EnhancedShadow.m_Offsets.m_RedzoneOffsetTrailing = 0;
 		ro_EnhancedShadow.m_Offsets.m_CanaryOffsetLeading = 0;
@@ -133,7 +143,7 @@ namespace Kerbecs::MemoryZone {
 	}
 
 	template<typename T>
-	size_t computeShadowHeapSize(size_t v_Payload) {
+	size_t KERBECS computeShadowHeapSize(size_t v_Payload) {
 		return REDZONE_SIZE          // leading redzone
 			+ v_Payload              // user payload
 			+ (alignof(T) - 1)       // alignment slop
@@ -143,7 +153,7 @@ namespace Kerbecs::MemoryZone {
 	}
 
 	template<typename T>
-	size_t computeEnhancedShadowHeapSize(size_t v_Payload) {
+	size_t KERBECS computeEnhancedShadowHeapSize(size_t v_Payload) {
 		return REDZONE_SIZE               // leading redzone
 			+ sizeof(EnhancedMetaData)    // leading metadata
 			+ CANARY_SIZE                 // leading canary (qword)
@@ -162,50 +172,33 @@ namespace Kerbecs::MemoryZone {
 		return v_Input ^ (v_Input >> 31);
 	}
 
-	// Map user payload range [addr, addr+size) into shadowzone.
-// Returns start of shadow range or nullptr if out-of-bounds.
-	inline void* mapToShadow(void* p_User, size_t v_Size) noexcept {
-		if (!p_User || v_Size == 0) return nullptr;
-
-		uintptr_t userStart = reinterpret_cast<uintptr_t>(p_User);
-		uintptr_t userEnd = userStart + v_Size - 1;
-
-		// Compute shadow addresses (scale + offset)
-		uintptr_t shadowStart = (userStart >> SHADOW_SCALE) + reinterpret_cast<uintptr_t>(instance().m_ShadowZone);
-		uintptr_t shadowEnd = (userEnd >> SHADOW_SCALE) + reinterpret_cast<uintptr_t>(instance().m_ShadowZone);
-
-		// Bounds check against reserved shadowzone
-		uintptr_t shadowZoneStart = reinterpret_cast<uintptr_t>(instance().m_ShadowZone);
-		uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(instance().m_GlobalZone);
-
-		if (shadowStart < shadowZoneStart || shadowEnd >= shadowZoneEnd) {
-			return nullptr; // mapping would spill outside
-		}
-
-		return std::bit_cast<void*>(shadowStart);
-	}
+	KERBECS void* mapToShadow(void* p_User, size_t v_Size) noexcept;
 
 	struct KERBECS UserRange final {
 		void* start;
 		void* end; // inclusive
 	};
 
-	inline KERBECS UserRange mapToUser(void* p_Shadow) noexcept {
-		if (!p_Shadow) return { nullptr, nullptr };
+	KERBECS UserRange mapToUser(void* p_Shadow) noexcept;
+	KERBECS bool shadowPoison(void* userPtr, size_t size);
+	KERBECS bool shadowUnpoison(void* userPtr, size_t size);
 
-		uintptr_t shadowAddr = reinterpret_cast<uintptr_t>(p_Shadow);
-		uintptr_t shadowZoneStart = reinterpret_cast<uintptr_t>(instance().m_ShadowZone);
-		uintptr_t shadowZoneEnd = shadowZoneStart + SHADOWZONE_SIZE;
+	inline bool KERBECS initShadowzone() {
+		return instance().init();
+	}
 
-		// Bounds check
-		if (shadowAddr < shadowZoneStart || shadowAddr >= shadowZoneEnd) {
-			return { nullptr, nullptr }; // outside valid shadowzone
-		}
+	inline bool KERBECS teardownShadowzone() {
+		auto& zone = instance();
+		if (zone.m_Shutdown) return false;
 
-		// Compute user range
-		uintptr_t userBase = (shadowAddr - shadowZoneStart) << SHADOW_SCALE; // multiply by 8
-		uintptr_t userEnd = userBase + ((1 << SHADOW_SCALE) - 1);           // base+7
+		Memory::release(zone.m_MemoryZone, (SHADOWZONE_SIZE + GLOBALZONE_SIZE) * Memory::GIBI_BYTE);
 
-		return { std::bit_cast<void*>(userBase), std::bit_cast<void*>(userEnd) };
+		zone.m_MemoryZone = nullptr;
+		zone.m_ShadowZone = nullptr;
+		zone.m_GlobalZone = nullptr;
+		zone.m_Initialized = false;
+		zone.m_Shutdown = true;									 
+
+		return true;
 	}
 }

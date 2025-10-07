@@ -23,22 +23,10 @@
 
 #include "Kerbecs.h"
 #include "MemoryZone.h"
-#include "../../../Corium/src/Public/CoriumAtomics.h"
+#include "ShadowUtils.h"
 
 namespace Kerbecs::Shadow {
 	typedef MemoryZone::Shadow* SHP;
-	typedef MemoryZone::EnhancedShadow* ESHP;
-	enum class KERBECS ShadowMode : uint8_t {
-		NORMAL, ENHANCED
-	};
-
-	bool KERBECS rawPoison(void* p_Memory, size_t v_Start, size_t v_Length);
-	bool KERBECS rawRedzone(void* p_Memory, size_t v_Start, size_t v_Length);
-	bool KERBECS rawUnPoison(void* p_Memory, size_t v_Start, size_t v_Length);
-	bool KERBECS rawDeRedzone(void* p_Memory, size_t v_Start, size_t v_Length);
-	bool KERBECS rawCanary(void* p_Memory, size_t v_Start, size_t v_Length);
-	bool KERBECS rawRemoveCanary(void* p_Memory, size_t v_Start, size_t v_Length);
-	bool KERBECS rawTombstone(void* p_Memory, size_t v_Start, size_t v_Length);
 
 	bool KERBECS poison(SHP po_Shadow, size_t v_Offset);
 	bool KERBECS unPoison(SHP po_Shadow, size_t v_Offset);
@@ -52,7 +40,38 @@ namespace Kerbecs::Shadow {
 	bool KERBECS tombstone(SHP po_Shadow, size_t v_Offset);
 	bool KERBECS tombstoneRange(SHP po_Shadow, size_t v_Offset, size_t v_Length);
 	bool KERBECS initMetadata(SHP po_Shadow, size_t v_AllocatorID);
+	size_t KERBECS countShadowPoisons(SHP po_Shadow, size_t v_Offset, size_t v_Length);
+	bool KERBECS verifyTombstone(SHP po_Shadow, size_t v_Offset, size_t v_Length);
 
+	bool KERBECS verifyMetadata(SHP po_Shadow, size_t v_ExpectedAllocatorID);
+	template<typename T>
+	Utils::MemoryState KERBECS getMemoryState(SHP po_Shadow, size_t v_Idx = 0) {
+		if (!po_Shadow || !po_Shadow->m_RawPtr) return Utils::MemoryState::CORRUPTED;
+
+		size_t offset = v_Idx * sizeof(T);
+
+		// Shadow poison check
+		size_t poisoned = countShadowPoisons(po_Shadow, offset, sizeof(T));
+		if (poisoned == sizeof(T)) return Utils::MemoryState::UNINITIALIZED;
+		if (poisoned > 0 && poisoned < sizeof(T)) return Utils::MemoryState::CORRUPTED;
+
+		// Tombstone check
+		if (verifyTombstone(po_Shadow, offset, sizeof(T))) return Utils::MemoryState::DESTROYED;
+
+		// Redzone check
+		if (!verifyRedzone(po_Shadow)) return Utils::MemoryState::CORRUPTED;
+
+		return Utils::MemoryState::CONSTRUCTED;
+	}
+
+	template<typename T>
+	Utils::MemoryState KERBECS verifyBlockState(SHP po_Shadow, size_t count) {
+		for (size_t i = 0; i < count; i++) {
+			Utils::MemoryState s = getMemoryState<T>(po_Shadow, i);
+			if (s != Utils::MemoryState::DESTROYED) return s;
+		}
+		return Utils::MemoryState::DESTROYED;
+	}
 
 	template<typename T>
 	bool KERBECS init(SHP po_Shadow, void* p_Memory, size_t v_BlockSize, size_t count = 1) {
@@ -70,6 +89,10 @@ namespace Kerbecs::Shadow {
 		po_Shadow->m_Alignment = alignof(T);
 		po_Shadow->m_RawPtr = std::bit_cast<void*>(aligned);
 
+		// --- Init Shadowzone pointer ---
+		po_Shadow->m_ShadowzoneMappingPtr = MemoryZone::mapToShadow(po_Shadow->m_RawPtr, payloadSize);
+		if (!po_Shadow->m_ShadowzoneMappingPtr) return false;
+
 		// --- Offsets (all start markers) ---
 		po_Shadow->m_Offsets.m_RedzoneOffsetLeading = 0;              // leading redzone start
 		po_Shadow->m_Offsets.m_UserDataOffset = aligned - base; // payload start
@@ -81,11 +104,11 @@ namespace Kerbecs::Shadow {
 		poisonRange(po_Shadow, 0, payloadSize);
 
 		// --- Apply redzones ---
-		rawRedzone(p_Memory,
+		Utils::rawRedzone(p_Memory,
 			po_Shadow->m_Offsets.m_RedzoneOffsetLeading,
 			po_Shadow->m_Offsets.m_UserDataOffset - po_Shadow->m_Offsets.m_RedzoneOffsetLeading);
 
-		rawRedzone(p_Memory,
+		Utils::rawRedzone(p_Memory,
 			po_Shadow->m_Offsets.m_RedzoneOffsetTrailing,
 			MemoryZone::REDZONE_SIZE);
 
@@ -113,9 +136,25 @@ namespace Kerbecs::Shadow {
 	}
 
 	template<typename T>
-	bool KERBECS destroy(SHP po_Shadow) {
-		if (!po_Shadow) return false;
-		static_cast<T*>(po_Shadow->m_RawPtr)->~T();
+	bool KERBECS destroy(SHP po_Shadow, size_t expectedAllocatorID, size_t v_Idx = 0) {
+		if (!po_Shadow || !po_Shadow->m_RawPtr) return false;
+
+		// 1. Metadata check
+		if (!verifyMetadata(po_Shadow, expectedAllocatorID)) return false;
+
+		// 2. State resolution
+		Utils::MemoryState state = getMemoryState<T>(po_Shadow, v_Idx);
+		if (state == Utils::MemoryState::UNINITIALIZED) return false; // never constructed
+		if (state == Utils::MemoryState::DESTROYED)     return false; // double free
+		if (state == Utils::MemoryState::CORRUPTED)     return false; // invalid/corrupted
+
+		// 3. Call destructor
+		void* loc = static_cast<std::byte*>(po_Shadow->m_RawPtr) + v_Idx * sizeof(T);
+		static_cast<T*>(loc)->~T();
+
+		// 4. Overwrite + shadow poison
+		tombstoneRange(po_Shadow, v_Idx * sizeof(T), sizeof(T));
+		MemoryZone::shadowPoison(static_cast<std::byte*>(po_Shadow->m_RawPtr) + v_Idx * sizeof(T), sizeof(T));
 		return true;
 	}
 
@@ -142,121 +181,5 @@ namespace Kerbecs::Shadow {
 	template<typename T>
 	bool KERBECS tombstoneObject(SHP po_Shadow, size_t v_Index) {
 		return tombstoneRange(po_Shadow, v_Index * sizeof(T), sizeof(T));
-	}
-
-	bool KERBECS poison(ESHP po_EnhancedShadow, size_t v_Offset);
-	bool KERBECS unPoison(ESHP po_EnhancedShadow, size_t v_Offset);
-	bool KERBECS poisonRange(ESHP po_EnhancedShadow, size_t v_Offset, size_t v_Length);
-	bool KERBECS unPoisonRange(ESHP po_EnhancedShadow, size_t v_Offset, size_t v_Length);
-	bool KERBECS redzone(ESHP po_EnhancedShadow, size_t v_Offset);
-	bool KERBECS deRedzone(ESHP po_EnhancedShadow, size_t v_Offset);
-	bool KERBECS redzoneRange(ESHP po_EnhancedShadow, size_t v_Offset, size_t v_Length);
-	bool KERBECS deRedzoneRange(ESHP po_EnhancedShadow, size_t v_Offset, size_t v_Length);
-	bool KERBECS verifyRedzone(ESHP po_EnhancedShadow);
-	bool KERBECS tombstone(ESHP po_EnhancedShadow, size_t v_Offset);
-	bool KERBECS tombstoneRange(ESHP po_EnhancedShadow, size_t v_Offset, size_t v_Length);
-	bool KERBECS initMetadata(ESHP po_Shadow, size_t v_AllocatorID, size_t v_ThreadID);
-
-	template<typename T>
-	bool KERBECS init(ESHP po_EnhancedShadow, void* p_Memory, size_t v_BlockSize, size_t count = 1) {
-		size_t fullSize = MemoryZone::computeEnhancedShadowHeapSize<T>(count);
-		if (v_BlockSize < fullSize) return false;
-
-		size_t payloadSize = count * sizeof(T);
-		uintptr_t base = reinterpret_cast<uintptr_t>(p_Memory);
-
-		// --- Leading Metadata ---
-		// Start after leading redzone, align for EnhancedMetaData
-		uintptr_t unaligned = base + MemoryZone::REDZONE_SIZE;
-		uintptr_t aligned = (unaligned + alignof(MemoryZone::EnhancedMetaData) - 1) & ~(alignof(MemoryZone::EnhancedMetaData) - 1);
-
-		po_EnhancedShadow->m_Alignment = alignof(T);
-		po_EnhancedShadow->m_Offsets.m_RedzoneOffsetLeading = 0;
-
-		po_EnhancedShadow->m_Offsets.m_MetaDataOffsetLeading = aligned - base;
-		po_EnhancedShadow->m_Offsets.m_CanaryOffsetLeading = po_EnhancedShadow->m_Offsets.m_MetaDataOffsetLeading + sizeof(MemoryZone::EnhancedMetaData);
-
-		// --- User Payload ---
-		// Start after leading canary, align for T
-		unaligned = base + po_EnhancedShadow->m_Offsets.m_CanaryOffsetLeading + MemoryZone::CANARY_SIZE;
-		aligned = (unaligned + alignof(T) - 1) & ~(alignof(T) - 1);
-
-		po_EnhancedShadow->m_Offsets.m_UserDataOffset = aligned - base;
-		po_EnhancedShadow->m_Offsets.m_CanaryOffsetTrailing = po_EnhancedShadow->m_Offsets.m_UserDataOffset + payloadSize;
-
-		// --- Trailing Metadata ---
-		// Start after trailing canary, align for EnhancedMetaData
-		unaligned = po_EnhancedShadow->m_Offsets.m_CanaryOffsetTrailing + MemoryZone::CANARY_SIZE;
-		aligned = (unaligned + alignof(MemoryZone::EnhancedMetaData) - 1) & ~(alignof(MemoryZone::EnhancedMetaData) - 1);
-
-		po_EnhancedShadow->m_Offsets.m_MetaDataOffsetTrailing = aligned - base;
-		po_EnhancedShadow->m_Offsets.m_RedzoneOffsetTrailing = po_EnhancedShadow->m_Offsets.m_MetaDataOffsetTrailing + sizeof(MemoryZone::EnhancedMetaData);
-
-		// --- Poison Payload ---
-		poisonRange(po_EnhancedShadow, 0, payloadSize);
-
-		// --- Apply Redzones ---
-		rawRedzone(p_Memory,
-			0,
-			po_EnhancedShadow->m_Offsets.m_MetaDataOffsetLeading);
-		rawRedzone(p_Memory,
-			po_EnhancedShadow->m_Offsets.m_RedzoneOffsetTrailing,
-			v_BlockSize - po_EnhancedShadow->m_Offsets.m_RedzoneOffsetTrailing);
-
-		// --- Apply Canaries ---
-		rawCanary(p_Memory,
-			po_EnhancedShadow->m_Offsets.m_CanaryOffsetLeading,
-			po_EnhancedShadow->m_Offsets.m_UserDataOffset - po_EnhancedShadow->m_Offsets.m_CanaryOffsetLeading);
-		rawCanary(p_Memory,
-			po_EnhancedShadow->m_Offsets.m_CanaryOffsetTrailing,
-			po_EnhancedShadow->m_Offsets.m_MetaDataOffsetTrailing - po_EnhancedShadow->m_Offsets.m_CanaryOffsetTrailing);
-
-		void* loc = static_cast<std::byte*>(p_Memory) + po_EnhancedShadow->m_Offsets.m_MetaDataOffsetLeading;
-		::new (loc) MemoryZone::EnhancedMetaData();
-
-		loc = static_cast<std::byte*>(p_Memory) + po_EnhancedShadow->m_Offsets.m_MetaDataOffsetTrailing;
-		::new (loc) MemoryZone::EnhancedMetaData();
-
-		po_EnhancedShadow->m_TotalSize = v_BlockSize;
-		return true;
-	}
-
-	template<typename T, typename...Args>
-	bool KERBECS construct(ESHP po_EnhancedShadow, Args&&...u_Args) {
-		if (!po_EnhancedShadow) return false;
-		::new(po_EnhancedShadow->m_RawPtr) T(std::forward<Args>(u_Args)...);
-		return true;
-	}
-
-	template<typename T>
-	bool KERBECS destroy(ESHP po_EnhancedShadow) {
-		if (!po_EnhancedShadow) return false;
-		static_cast<T*>(po_EnhancedShadow->m_RawPtr)->~T();
-		return true;
-	}
-
-	template<typename T>
-	bool KERBECS poisonObject(ESHP po_EnhancedShadow, size_t v_Index = 0) {
-		return poisonRange(po_EnhancedShadow, v_Index * sizeof(T), sizeof(T));
-	}
-
-	template<typename T>
-	bool KERBECS unPoisonObject(ESHP po_EnhancedShadow, size_t v_Index = 0) {
-		return unPoisonRange(po_EnhancedShadow, v_Index * sizeof(T), sizeof(T));
-	}
-
-	template<typename T>
-	bool KERBECS redzoneObject(ESHP po_EnhancedShadow, size_t v_Index) {
-		return redzoneRange(po_EnhancedShadow, v_Index * sizeof(T), sizeof(T));
-	}
-
-	template<typename T>
-	bool KERBECS deRedzoneObject(ESHP po_EnhancedShadow, size_t v_Index) {
-		return deRedzoneRange(po_EnhancedShadow, v_Index * sizeof(T), sizeof(T));
-	}
-
-	template<typename T>
-	bool KERBECS tombstoneObject(ESHP po_EnhancedShadow, size_t v_Index) {
-		return tombstoneRange(po_EnhancedShadow, v_Index * sizeof(T), sizeof(T));
 	}
 }

@@ -11,6 +11,8 @@ add_library(Kerbecs SHARED
     src/Private/Memory.cpp src/Public/Memory.h
     src/Private/ShadowMemory.cpp src/Public/ShadowMemory.h
     src/Private/MemoryZone.cpp src/Public/MemoryZone.h
+    src/Private/EnhancedShadowMemory.cpp src/Public/EnhancedShadowMemory.h
+    src/Private/ShadowUtils.cpp src/Public/ShadowUtils.h
 )
 
 target_include_directories(Kerbecs PUBLIC 
