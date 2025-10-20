@@ -97,6 +97,20 @@ namespace Kerbecs::MemoryZone {
 		auto* shadow = static_cast<uint8_t*>(MemoryZone::mapToShadow(userPtr, size));
 		if (!shadow) return false;
 
+		switch (Memory::queryPage(shadow)) {
+		case Memory::PageState::COMMITTED: break;
+		case Memory::PageState::FREE: return false;
+		case Memory::PageState::RESERVED:
+		{
+			constexpr size_t PAGE_SIZE = 4 * Memory::KIBI_BYTE;
+			uintptr_t pageStart = reinterpret_cast<uintptr_t>(shadow) & ~(PAGE_SIZE - 1);
+			size_t totalSize = ((size / 8) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+			Memory::commit(std::bit_cast<void*>(pageStart), totalSize , 0);
+			break;
+		}
+		case Memory::PageState::UNKNOWN: return false;
+		}
+
 		uintptr_t addr = reinterpret_cast<uintptr_t>(userPtr);
 
 		// First partial shadow byte
@@ -108,8 +122,7 @@ namespace Kerbecs::MemoryZone {
 		}
 
 		size -= firstLen;
-		addr += firstLen;
-		shadow += (addr >> 3) - ((addr - firstLen) >> 3);
+		shadow += (firstLen + bitPos) >> 3;
 
 		// Middle full shadow bytes
 		size_t fullBytes = size >> 3;
