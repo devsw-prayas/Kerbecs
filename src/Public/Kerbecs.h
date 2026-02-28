@@ -20,11 +20,30 @@
 */
 
 #pragma once
-#ifndef KERBECS
-#define KERBECS __declspec(dllexport)
+#include <KerbecsCompiler.h>
+
+#if defined(KERBECS_SHARED)
+
+#if KERBECS_COMPILER_MSVC
+#if defined(KERBECS_BUILDING_RUNTIME)
+#define KERBECS_RUNTIME_API __declspec(dllexport)
+#else
+#define KERBECS_RUNTIME_API __declspec(dllimport)
 #endif
-#include <cstdint>
-#include <bit>
-#include <new>
-#include <algorithm>
+#elif KERBECS_COMPILER_CLANG || KERBECS_COMPILER_GCC
+#define KERBECS_RUNTIME_API __attribute__((visibility("default")))
+#else
+#define KERBECS_RUNTIME_API
+#endif
+
+#else
+// Static build -> no import/export
+#define KERBECS_RUNTIME_API
+#endif
+
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <atomic>		   
+#include <algorithm>
