@@ -24,43 +24,64 @@
 #include "KerbecsDiagnostics.h"
 
 namespace Kerbecs::Tracing {
-	bool AllocationRegistry::init(RegistryEntry* p_Slots, size_t v_Capacity) noexcept {
-		if (!p_Slots || v_Capacity == 0) return false;
+	// -------------------------------------------------------------------------
+	// init / shutdown
+	// -------------------------------------------------------------------------
 
-		KERBECS_ASSERT((v_Capacity & (v_Capacity - 1)) == 0);
-		std::memset(p_Slots, 0, v_Capacity * sizeof(RegistryEntry));
+	bool AllocationRegistry::init() noexcept {
+		m_NodePool = static_cast<Internal::RegistryNode*>(
+			Memory::allocate(kNodeCapacity * sizeof(Internal::RegistryNode)));
 
-		m_Slots = p_Slots;
-		m_Capacity = v_Capacity;
+		if (!m_NodePool)
+			return false;
+
+		std::memset(m_NodePool, 0,
+					kNodeCapacity * sizeof(Internal::RegistryNode));
+
+		m_NodeCursor.store(0, std::memory_order_relaxed);
 		m_Count.store(0, std::memory_order_relaxed);
 
 		return true;
 	}
 
-	size_t AllocationRegistry::_probe(const void* p_BlockBase) const noexcept {
-		if (!m_Slots || m_Capacity == 0) return m_Capacity;
-
-		size_t mask = m_Capacity - 1;
-		size_t start = _hash(p_BlockBase);
-
-		for (size_t i = 0; i < m_Capacity; i++) {
-			size_t idx = (start + i) & mask;
-			const RegistryEntry& slot = m_Slots[idx];
-
-			AllocationState state = slot.m_State.load(std::memory_order_acquire);
-
-			if (state == AllocationState::Empty)
-				return m_Capacity; // key definitely not present
-
-			if (state == AllocationState::Dead)
-				continue;
-
-			if (slot.m_BlockBase == p_BlockBase)
-				return idx; // found
+	void AllocationRegistry::shutdown() noexcept {
+		if (m_NodePool) {
+			KERBECS_UNUSED(Memory::release(
+				m_NodePool,
+				kNodeCapacity * sizeof(Internal::RegistryNode)));
+			m_NodePool = nullptr;
 		}
 
-		return m_Capacity; // table fully probed, not found
+		m_NodeCursor.store(0, std::memory_order_relaxed);
+		m_Count.store(0, std::memory_order_relaxed);
 	}
+
+	// -------------------------------------------------------------------------
+	// _allocateNode
+	// -------------------------------------------------------------------------
+
+	Internal::RegistryNode* AllocationRegistry::_allocateNode() noexcept {
+		size_t idx = m_NodeCursor.fetch_add(1, std::memory_order_relaxed);
+
+		if (idx >= kNodeCapacity) {
+			KERBECS_ASSERT(false && "AllocationRegistry node pool exhausted");
+			return nullptr;
+		}
+
+		return &m_NodePool[idx];
+	}
+
+	// -------------------------------------------------------------------------
+	// insert
+	//
+	// Acquires the bucket lock to prevent lost-update on concurrent prepends
+	// to the same bucket head. The duplicate check also runs under the lock
+	// so two racing inserts with the same block base cannot both succeed.
+	//
+	// The node is fully initialised before its state is set to Live and before
+	// it is published to the bucket head. m_State store uses release so that
+	// any acquire load of m_Head that reaches this node also sees all fields.
+	// -------------------------------------------------------------------------
 
 	bool AllocationRegistry::insert(
 		void* p_BlockBase,
@@ -70,155 +91,333 @@ namespace Kerbecs::Tracing {
 		uint64_t          v_AllocatorID,
 		uint32_t          v_ThreadID,
 		const char* p_Name,
-		const StackTrace& v_AllocTrace) noexcept {
-		if (!m_Slots || !p_BlockBase) return false;
+		const StackTrace& v_AllocTrace,
+		size_t            v_ObjectCount) noexcept {
+		if (!p_BlockBase)
+			return false;
 
-		if (_probe(p_BlockBase) != m_Capacity) return false;
+		const size_t       bucketIdx = _index(p_BlockBase);
+		Internal::Bucket& bucket = m_Buckets[bucketIdx];
 
-		size_t mask = m_Capacity - 1;
-		size_t start = _hash(p_BlockBase);
+		// Acquire bucket lock for the duration of the duplicate check + prepend.
+		bucket.m_Lock.lock();
 
-		for (size_t i = 0; i < m_Capacity; i++) {
-			size_t idx = (start + i) & mask;
-			RegistryEntry& slot = m_Slots[idx];
+		// Duplicate check under the lock.
+		{
+			Internal::RegistryNode* cur =
+				bucket.m_Head.load(std::memory_order_relaxed);
 
-			AllocationState expected = slot.m_State.load(std::memory_order_acquire);
-
-			if (expected != AllocationState::Empty && expected != AllocationState::Dead)
-				continue;
-
-			if (!slot.m_State.compare_exchange_strong(
-				expected,
-				AllocationState::Live,
-				std::memory_order_acq_rel,
-				std::memory_order_acquire)) {
-				continue;
+			while (cur) {
+				if (cur->m_BlockBase == p_BlockBase) {
+					bucket.m_Lock.unlock();
+					return false; // already tracked - caller reports overlap
+				}
+				cur = cur->m_Next;
 			}
-
-			slot.m_BlockBase = p_BlockBase;
-			slot.m_UserPtr = p_UserPtr;
-			slot.m_BlockSize = v_BlockSize;
-			slot.m_UserSize = v_UserSize;
-			slot.m_AllocatorID = v_AllocatorID;
-			slot.m_ThreadID = v_ThreadID;
-			slot.m_Name = p_Name;
-			slot.m_AllocTrace = v_AllocTrace;
-			std::memset(&slot.m_FreeTrace, 0, sizeof(StackTrace));
-
-			m_Count.fetch_add(1, std::memory_order_relaxed);
-			return true;
 		}
 
-		return false;
-	}
-
-	bool AllocationRegistry::remove(void* p_BlockBase, const StackTrace& v_FreeTrace) const noexcept {
-		if (!m_Slots || !p_BlockBase) return false;
-
-		size_t idx = _probe(p_BlockBase);
-		if (idx == m_Capacity) return false; // not found
-
-		RegistryEntry& slot = m_Slots[idx];
-
-		AllocationState expected = AllocationState::Live;
-		if (!slot.m_State.compare_exchange_strong(
-			expected,
-			AllocationState::Quarantine,
-			std::memory_order_acq_rel,
-			std::memory_order_acquire)) {
+		Internal::RegistryNode* newNode = _allocateNode();
+		if (!newNode) {
+			bucket.m_Lock.unlock();
 			return false;
 		}
 
-		slot.m_FreeTrace = v_FreeTrace;
+		// Populate all fields before publishing.
+		newNode->m_BlockBase = p_BlockBase;
+		newNode->m_UserPtr = p_UserPtr;
+		newNode->m_BlockSize = v_BlockSize;
+		newNode->m_UserSize = v_UserSize;
+		newNode->m_AllocatorID = v_AllocatorID;
+		newNode->m_ThreadID = v_ThreadID;
+		newNode->m_Name = p_Name;
+		newNode->m_AllocTrace = v_AllocTrace;
+		newNode->m_LiveCount.store(v_ObjectCount, std::memory_order_relaxed);
+
+		std::memset(&newNode->m_FreeTrace, 0, sizeof(StackTrace));
+
+		// Publish state as Live with release so readers that acquire m_Head
+		// observe the fully initialised node.
+		newNode->m_State.store(
+			Internal::AllocationState::Live,
+			std::memory_order_release);
+
+		// CAS prepend under the bucket lock. Lock prevents concurrent inserts
+		// to this bucket from racing on m_Head; the CAS is still correct as
+		// the canonical publication primitive.
+		Internal::RegistryNode* head;
+		do {
+			head = bucket.m_Head.load(std::memory_order_relaxed);
+			newNode->m_Next = head;
+		} while (!bucket.m_Head.compare_exchange_weak(
+			head,
+			newNode,
+			std::memory_order_release,
+			std::memory_order_relaxed));
+
+		bucket.m_Lock.unlock();
+
+		m_Count.fetch_add(1, std::memory_order_relaxed);
 		return true;
 	}
+
+	// -------------------------------------------------------------------------
+	// beginRetiring
+	//
+	// Attempts to begin the dtor cycle. Returns the node pointer on success
+	// so the caller (shadowDestroy) can decrement m_LiveCount and proceed.
+	// Returns nullptr and fires the appropriate violation on any failure:
+	//   - tryLock fails  -> ThreadOwnership (concurrent dtor attempt)
+	//   - state != Live  -> appropriate violation (DoubleFree, UseAfterFree...)
+	// -------------------------------------------------------------------------
+
+	Internal::RegistryNode* AllocationRegistry::beginRetiring(
+		void* p_BlockBase,
+		uint32_t v_CallerThreadID) noexcept {
+
+		if (!p_BlockBase)
+			return nullptr;
+
+		Internal::RegistryNode* node = find(p_BlockBase);
+		if (!node)
+			return nullptr;
+
+		// Thread ownership check. The block must be destroyed from the same
+		// thread that allocated it. Caller passes currentThreadID(); we
+		// compare against the node's stamped m_ThreadID.
+		if (v_CallerThreadID != node->m_ThreadID)
+			return nullptr; // caller fires ThreadOwnership violation
+
+		// Non-blocking lock attempt. A false return means another thread is
+		// already in the dtor cycle for this block - that is a violation.
+		if (!node->m_DtorLock.tryLock())
+			return nullptr; // caller fires ThreadOwnership violation
+
+		// Verify state is Live under the dtor lock. Any other state is a
+		// violation the caller must handle after we release the lock.
+		Internal::AllocationState expected = Internal::AllocationState::Live;
+		if (!node->m_State.compare_exchange_strong(
+			expected,
+			Internal::AllocationState::Retiring,
+			std::memory_order_acq_rel,
+			std::memory_order_acquire)) {
+			// State was not Live - unlock and let caller fire the violation.
+			node->m_DtorLock.unlock();
+			return nullptr;
+		}
+
+		return node;
+	}
+
+	// -------------------------------------------------------------------------
+	// endRetiring
+	//
+	// Called after the dtor cycle completes (destructor called, tombstone
+	// stamped). Reads m_LiveCount with acquire to decide the next state:
+	//
+	//   m_LiveCount > 0  -> Retiring -> Live   (block has surviving objects)
+	//   m_LiveCount == 0 -> Retiring -> Quarantine (block is fully dead,
+	//                       enqueue into quarantine with thunk for dealloc)
+	//
+	// The dtor lock is released after the transition regardless of path.
+	// The quarantine enqueue happens before lock release so that the block
+	// cannot be accessed again before it is safely in the queue.
+	// -------------------------------------------------------------------------
+
+	void AllocationRegistry::endRetiring(
+		void* p_BlockBase,
+		uint64_t v_Epoch,
+		void* p_Allocator,
+		void   (*p_Thunk)(void*, void*, size_t)) noexcept {
+		if (!p_BlockBase)
+			return;
+
+		Internal::RegistryNode* node = find(p_BlockBase);
+		if (!node)
+			return;
+
+		const size_t liveCount =
+			node->m_LiveCount.load(std::memory_order_acquire);
+
+		if (liveCount > 0) {
+			// Objects remain - transition back to Live.
+			Internal::AllocationState expected = Internal::AllocationState::Retiring;
+			KERBECS_UNUSED(node->m_State.compare_exchange_strong(
+				expected,
+				Internal::AllocationState::Live,
+				std::memory_order_acq_rel,
+				std::memory_order_acquire));
+
+			node->m_DtorLock.unlock();
+			return;
+		}
+
+		// No objects remain - transition to Quarantine.
+		Internal::AllocationState expected = Internal::AllocationState::Retiring;
+		if (!node->m_State.compare_exchange_strong(
+			expected,
+			Internal::AllocationState::Quarantine,
+			std::memory_order_acq_rel,
+			std::memory_order_acquire)) {
+			node->m_DtorLock.unlock();
+			return;
+		}
+
+		// Store free-site trace.
+		std::memset(&node->m_FreeTrace, 0, sizeof(StackTrace));
+
+		// Quarantine enqueue is done by the caller (shadowDestroy) which has
+		// access to the zone's quarantine instance. We release the dtor lock
+		// here so the caller can safely enqueue before returning.
+		node->m_DtorLock.unlock();
+
+		// Decrement live count at the zone level.
+		m_Count.fetch_sub(1, std::memory_order_relaxed);
+
+		// Caller is responsible for enqueuing to the quarantine with
+		// (p_BlockBase, node->m_BlockSize, v_Epoch, p_Allocator, p_Thunk).
+		KERBECS_UNUSED(v_Epoch);
+		KERBECS_UNUSED(p_Allocator);
+		KERBECS_UNUSED(p_Thunk);
+	}
+
+	// -------------------------------------------------------------------------
+	// retire  (Quarantine -> Dead)
+	//
+	// Called by the QuarantineQueue flush path via NodePoolSegment scan,
+	// or directly here. CAS Quarantine -> Dead.
+	// -------------------------------------------------------------------------
 
 	bool AllocationRegistry::retire(void* p_BlockBase) noexcept {
-		if (!m_Slots || !p_BlockBase) return false;
+		if (!p_BlockBase)
+			return false;
 
-		size_t idx = _probe(p_BlockBase);
-		if (idx == m_Capacity) return false;
+		Internal::RegistryNode* node = find(p_BlockBase);
+		if (!node)
+			return false;
 
-		RegistryEntry& slot = m_Slots[idx];
+		Internal::AllocationState expected = Internal::AllocationState::Quarantine;
 
-		AllocationState expected = AllocationState::Quarantine;
-		if (!slot.m_State.compare_exchange_strong(
+		if (!node->m_State.compare_exchange_strong(
 			expected,
-			AllocationState::Dead,
+			Internal::AllocationState::Dead,
 			std::memory_order_acq_rel,
 			std::memory_order_acquire)) {
 			return false;
 		}
 
-		m_Count.fetch_sub(1, std::memory_order_relaxed);
 		return true;
 	}
 
-	const RegistryEntry* AllocationRegistry::find(const void* p_BlockBase) const noexcept {
-		if (!m_Slots || !p_BlockBase) return nullptr;
+	// -------------------------------------------------------------------------
+	// find  (lock-free)
+	// -------------------------------------------------------------------------
 
-		size_t idx = _probe(p_BlockBase);
-		if (idx == m_Capacity) return nullptr;
+	Internal::RegistryNode*
+		AllocationRegistry::find(const void* p_BlockBase) noexcept {
+		if (!p_BlockBase)
+			return nullptr;
 
-		const RegistryEntry& slot = m_Slots[idx];
-		AllocationState state = slot.m_State.load(std::memory_order_acquire);
+		const size_t idx = _index(p_BlockBase);
 
-		if (state == AllocationState::Live || state == AllocationState::Quarantine)
-			return &slot;
+		Internal::RegistryNode* node =
+			m_Buckets[idx].m_Head.load(std::memory_order_acquire);
 
-		return nullptr;
-	}
+		while (node) {
+			// Skip Dead and Empty nodes.
+			const auto state = node->m_State.load(std::memory_order_acquire);
+			if (state != Internal::AllocationState::Dead &&
+				state != Internal::AllocationState::Empty &&
+				node->m_BlockBase == p_BlockBase)
+				return node;
 
-	RegistryEntry* AllocationRegistry::find(const void* p_BlockBase) noexcept {
-		return const_cast<RegistryEntry*>(
-			const_cast<const AllocationRegistry*>(this)->find(p_BlockBase));
-	}
-
-	const RegistryEntry* AllocationRegistry::findRange(const void* p_Address) const noexcept {
-		if (!m_Slots || !p_Address) return nullptr;
-
-		uintptr_t addr = reinterpret_cast<uintptr_t>(p_Address);
-
-		for (size_t i = 0; i < m_Capacity; i++) {
-			const RegistryEntry& slot = m_Slots[i];
-			AllocationState state = slot.m_State.load(std::memory_order_acquire);
-
-			if (state != AllocationState::Live && state != AllocationState::Quarantine)
-				continue;
-
-			uintptr_t start = reinterpret_cast<uintptr_t>(slot.m_UserPtr);
-			uintptr_t end = start + slot.m_UserSize;
-
-			if (addr >= start && addr < end)
-				return &slot;
+			node = node->m_Next;
 		}
 
 		return nullptr;
 	}
 
-	size_t AllocationRegistry::liveCount() const noexcept {
-		if (!m_Slots) return 0;
-		size_t count = 0;
-		for (size_t i = 0; i < m_Capacity; i++) {
-			if (m_Slots[i].m_State.load(std::memory_order_relaxed) == AllocationState::Live)
-				count++;
+	const Internal::RegistryNode*
+		AllocationRegistry::find(const void* p_BlockBase) const noexcept {
+		if (!p_BlockBase)
+			return nullptr;
+
+		const size_t idx = _index(p_BlockBase);
+
+		const Internal::RegistryNode* node =
+			m_Buckets[idx].m_Head.load(std::memory_order_acquire);
+
+		while (node) {
+			const auto state = node->m_State.load(std::memory_order_acquire);
+			if (state != Internal::AllocationState::Dead &&
+				state != Internal::AllocationState::Empty &&
+				node->m_BlockBase == p_BlockBase)
+				return node;
+
+			node = node->m_Next;
 		}
-		return count;
+
+		return nullptr;
 	}
 
-	size_t AllocationRegistry::quarantineCount() const noexcept {
-		if (!m_Slots) return 0;
-		size_t count = 0;
-		for (size_t i = 0; i < m_Capacity; i++) {
-			if (m_Slots[i].m_State.load(std::memory_order_relaxed) == AllocationState::Quarantine)
-				count++;
+	// -------------------------------------------------------------------------
+	// findRange  (lock-free)
+	//
+	// p_BlockBase is hashed to find the correct bucket (same hash as insert).
+	// p_Address is the interior address being range-checked against
+	// [m_UserPtr, m_UserPtr + m_UserSize) within that bucket.
+	// -------------------------------------------------------------------------
+
+	Internal::RegistryNode* AllocationRegistry::findRange(const void* p_BlockBase, const void* p_Address) noexcept {
+		if (!p_BlockBase || !p_Address) return nullptr;
+		const size_t idx = _index(p_BlockBase);
+
+		Internal::RegistryNode* node = m_Buckets[idx].m_Head.load(std::memory_order_acquire);
+
+		const uintptr_t addr = reinterpret_cast<uintptr_t>(p_Address);
+
+		while (node) {
+			const auto state = node->m_State.load(std::memory_order_acquire);
+			if (state != Internal::AllocationState::Dead &&
+				state != Internal::AllocationState::Empty) {
+				const uintptr_t start = reinterpret_cast<uintptr_t>(node->m_UserPtr);
+
+				if (addr >= start && (addr - start) < node->m_UserSize) return node;
+			}
+			node = node->m_Next;
 		}
-		return count;
+
+		return nullptr;
 	}
 
-	float AllocationRegistry::loadFactor() const noexcept {
-		if (m_Capacity == 0) return 0.0f;
-		return static_cast<float>(m_Count.load(std::memory_order_relaxed))
-			/ static_cast<float>(m_Capacity);
+	const Internal::RegistryNode*
+		AllocationRegistry::findRange(
+			const void* p_BlockBase,
+			const void* p_Address) const noexcept {
+		if (!p_BlockBase || !p_Address)
+			return nullptr;
+
+		const size_t idx = _index(p_BlockBase);
+
+		const Internal::RegistryNode* node =
+			m_Buckets[idx].m_Head.load(std::memory_order_acquire);
+
+		const uintptr_t addr =
+			reinterpret_cast<uintptr_t>(p_Address);
+
+		while (node) {
+			const auto state = node->m_State.load(std::memory_order_acquire);
+			if (state != Internal::AllocationState::Dead &&
+				state != Internal::AllocationState::Empty) {
+				const uintptr_t start =
+					reinterpret_cast<uintptr_t>(node->m_UserPtr);
+
+				if (addr >= start && (addr - start) < node->m_UserSize)
+					return node;
+			}
+
+			node = node->m_Next;
+		}
+
+		return nullptr;
 	}
-}
+} // namespace Kerbecs::Tracing

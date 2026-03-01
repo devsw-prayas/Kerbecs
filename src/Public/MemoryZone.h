@@ -25,6 +25,8 @@
 #include "Kerbecs.h"
 #include "KerbecsDiagnostics.h"
 #include "KerbecsStats.h"
+#include "KerbecsAllocators.h"
+#include "MemorySupport.h"
 #include "AllocationRegistry.h"
 #include "QuarantineQueue.h"
 
@@ -64,98 +66,167 @@ namespace Kerbecs::MemoryZone {
 		void* m_End; // inclusive
 	};
 
-	struct KERBECS_RUNTIME_API StaticRegion final {
-		void* m_Base = nullptr;
-		std::atomic<size_t>  m_Bump = 0;        // only atomic member
-		size_t               m_Size = 0;
-
-		// Non-copyable, non-movable
-		StaticRegion() = default;
-		StaticRegion(const StaticRegion&) = delete;
-		StaticRegion& operator=(const StaticRegion&) = delete;
-		StaticRegion(StaticRegion&&) = delete;
-		StaticRegion& operator=(StaticRegion&&) = delete;
-
-		KERBECS_NODISCARD_MSG("Cannot discard ptr to allocated memory") void* allocate(size_t v_Size, size_t v_Align) noexcept;
-	};
-
+	// =========================================================================
+	// KerbecsMemoryZone
+	//
+	// Singleton owning the entire Kerbecs VA reservation and all subsystems.
+	//
+	// VA layout (all reserved in one contiguous block, none committed upfront):
+	//   [ShadowZone][GlobalZone][StaticZone]
+	//
+	// All three zones are lazy-committed. Each allocator calls
+	// commitPageIfNeeded on every page boundary it crosses. No upfront
+	// commit calls are made in init().
+	//
+	// StaticRegion is removed. Its responsibilities are split:
+	//   m_ShadowzoneAllocator -> bumps inside m_ShadowZone (shadow bitmap)
+	//   m_StaticAllocator     -> bumps inside m_StaticZone (KERBECS_PERSISTENT)
+	//   m_GlobalAllocator     -> bumps inside m_GlobalZone (KERBECS_GLOBAL)
+	//
+	// The registry and quarantine self-allocate their own storage via
+	// Memory::allocate - they do not carve from any zone.
+	// =========================================================================
 	struct alignas(128) KERBECS_RUNTIME_API KerbecsMemoryZone final {
+		// Zone base pointers - set after reservation, never changed.
 		void* m_MemoryZone = nullptr; // base of entire reserved VA block
-		void* m_ShadowZone = nullptr; // shadow bitmap region (lazy commit)
-		void* m_GlobalZone = nullptr; // registry, stats, violation queue
-		void* m_StaticZone = nullptr; // bump-allocated persistent allocations
+		void* m_ShadowZone = nullptr; // shadow bitmap region
+		void* m_GlobalZone = nullptr; // backing for GlobalAllocator
+		void* m_StaticZone = nullptr; // backing for StaticAllocator
 
-		StaticRegion m_StaticRegion;          // bump allocator over m_StaticZone
-		KerbecsStats m_Stats;                 // global stats - atomic counters
-		Tracing::AllocationRegistry  m_Registry;     // live allocation tracking
-		Quarantine::QuarantineQueue     m_Quarantine;   // deferred-free ring buffer
+		// Three lazy-commit bump allocators - one per zone.
+		// Owned directly by the zone. MemorySupport wrappers hold pointers
+		// to these members and provide the type-erased thunk for quarantine.
+		Allocators::ShadowzoneAllocator m_ShadowzoneAllocatorImpl;
+		Allocators::StaticAllocator     m_StaticAllocatorImpl;
+		Allocators::GlobalAllocator     m_GlobalAllocatorImpl;
 
-		bool         m_Initialized = false;
-		bool         m_Shutdown = false;
+		Shadow::Internal::MemorySupport<Allocators::ShadowzoneAllocator> m_ShadowzoneAllocator;
+		Shadow::Internal::MemorySupport<Allocators::StaticAllocator>     m_StaticAllocator;
+		Shadow::Internal::MemorySupport<Allocators::GlobalAllocator>     m_GlobalAllocator;
 
-		// Non-copyable, non-movable
+		std::atomic<uint64_t> m_Epoch{ 0 };
+		// Global stats - all atomic counters.
+		KerbecsStats m_Stats;
+
+		// Live allocation tracking - self-allocating node pool.
+		Tracing::AllocationRegistry m_Registry;
+
+		// Deferred-free ring buffer - self-allocating slot array.
+		Quarantine::QuarantineQueue m_Quarantine;
+
+		std::atomic<bool> m_Initialized{ false };
+		std::atomic<bool> m_Shutdown{ false };
+
+		// Non-copyable, non-movable.
 		KerbecsMemoryZone() = default;
 		KerbecsMemoryZone(const KerbecsMemoryZone&) = delete;
 		KerbecsMemoryZone& operator=(const KerbecsMemoryZone&) = delete;
 		KerbecsMemoryZone(KerbecsMemoryZone&&) = delete;
 		KerbecsMemoryZone& operator=(KerbecsMemoryZone&&) = delete;
 		~KerbecsMemoryZone() = default;
-		bool init(Quarantine::QuarantineQueue::FreeCallback p_FreeCallback) noexcept;
+
+		// No FreeCallback parameter - quarantine is self-contained.
+		bool init() noexcept;
 	};
 
-	KERBECS_FORCEINLINE KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
-	KerbecsMemoryZone& instance() {
-		static KerbecsMemoryZone s_Instance;
-		return s_Instance;
+	// Heap-allocated singleton to avoid static destructor ordering issues.
+	KERBECS_FORCEINLINE KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+		static KerbecsMemoryZone& instance() {
+		static KerbecsMemoryZone* s_Instance = new KerbecsMemoryZone();
+		return *s_Instance;
 	}
 
-	KERBECS_FORCEINLINE KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
-	KerbecsStats& stats() {
+	KERBECS_FORCEINLINE KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+		KerbecsStats& stats() {
 		return instance().m_Stats;
 	}
 
-	KERBECS_FORCEINLINE KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+	KERBECS_FORCEINLINE KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
 		Tracing::AllocationRegistry& registry() {
 		return instance().m_Registry;
 	}
 
-	KERBECS_FORCEINLINE KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+	KERBECS_FORCEINLINE KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
 		Quarantine::QuarantineQueue& quarantine() {
 		return instance().m_Quarantine;
 	}
 
-	 void* KERBECS_RUNTIME_API mapToShadow(void* p_User, size_t v_Size) noexcept;
-	KERBECS_RUNTIME_API UserRange  mapToUser(void* p_Shadow) noexcept;
+	void* KERBECS_RUNTIME_API mapToShadow(void* p_User, size_t v_Size) noexcept;
+	KERBECS_RUNTIME_API UserRange mapToUser(void* p_Shadow) noexcept;
 
 	KERBECS_RUNTIME_API bool shadowPoison(void* p_UserPtr, size_t v_Size) noexcept;
 	KERBECS_RUNTIME_API bool shadowUnpoison(void* p_UserPtr, size_t v_Size) noexcept;
 
-	KERBECS_FORCEINLINE KERBECS_RUNTIME_API bool initShadowzone(
-		Quarantine::QuarantineQueue::FreeCallback p_FreeCallback) noexcept {
-		return instance().init(p_FreeCallback);
+	// No FreeCallback - removed entirely.
+	KERBECS_FORCEINLINE KERBECS_RUNTIME_API bool initShadowzone() noexcept {
+		return instance().init();
 	}
 
 	KERBECS_FORCEINLINE KERBECS_RUNTIME_API bool teardownShadowzone() noexcept {
 		auto& zone = instance();
-		if (zone.m_Shutdown) return false;
 
-		// Flush any remaining quarantine entries before releasing VA
-		zone.m_Quarantine.flush();
+		if (zone.m_Shutdown.load(std::memory_order_acquire))
+			return false;
 
-		KERBECS_UNUSED(Memory::release(
-			zone.m_MemoryZone,
+		// Drain all quarantine entries regardless of epoch, then release
+		// the quarantine's self-allocated slab.
+		zone.m_Quarantine.flushEligible(
+			zone.m_Registry.poolSegment(),
+			SIZE_MAX);
+
+		zone.m_Quarantine.shutdown();
+
+		// ---- Leak detection ----
+		// Scan the node pool for any blocks still Live, Retiring, or
+		// Quarantine after the final flush. Each one is a leak - increment
+		// the violation counter and trap after the scan so the full leak
+		// count is visible in stats before the process halts.
+		{
+			const Tracing::NodePoolSegment seg = zone.m_Registry.poolSegment();
+			bool leakFound = false;
+
+			if (seg.m_Pool) {
+				for (size_t i = 0; i < seg.m_Capacity; ++i) {
+					const auto& node = seg.m_Pool[i];
+					const auto state =
+						node.m_State.load(std::memory_order_acquire);
+
+					if (state == Tracing::Internal::AllocationState::Live ||
+						state == Tracing::Internal::AllocationState::Retiring ||
+						state == Tracing::Internal::AllocationState::Quarantine) {
+						statsOnViolation(&zone.m_Stats);
+						leakFound = true;
+					}
+				}
+			}
+
+			if (leakFound)
+				KERBECS_TRAP();
+		}
+
+		// Release the registry node pool.
+		zone.m_Registry.shutdown();
+
+		// Release the main VA reservation.
+		constexpr size_t totalBytes =
 			(static_cast<size_t>(SHADOWZONE_SIZE) +
-				static_cast<size_t>(GLOBALZONE_SIZE) +
-				static_cast<size_t>(STATICZONE_SIZE)) * Memory::GIBI_BYTE));
+			 static_cast<size_t>(GLOBALZONE_SIZE) +
+			 static_cast<size_t>(STATICZONE_SIZE)) * Memory::GIBI_BYTE;
+
+		KERBECS_UNUSED(Memory::release(zone.m_MemoryZone, totalBytes));
 
 		zone.m_MemoryZone = nullptr;
 		zone.m_ShadowZone = nullptr;
 		zone.m_GlobalZone = nullptr;
 		zone.m_StaticZone = nullptr;
-		zone.m_Initialized = false;
-		zone.m_Shutdown = true;
+
+		zone.m_Initialized.store(false, std::memory_order_release);
+		zone.m_Shutdown.store(true, std::memory_order_release);
 
 		return true;
 	}
-
-}
+} // namespace Kerbecs::MemoryZone

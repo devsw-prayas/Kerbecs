@@ -41,7 +41,9 @@ namespace Kerbecs {
 		AlignmentViolation,  // construct<T>() ptr % alignof(T) != 0
 		SizeOverflow,        // blockSize<T>() multiplication overflowed
 		WildPointer,         // access to address not in AllocationRegistry
-		ThreadOwnership      // destroy() called from wrong thread (Strict policy)
+		ThreadOwnership,      // destroy() called from wrong thread (Strict policy)
+		QuarantineSaturation,     // quarantine ring buffer is full - fail fast
+		RetiredBoundaryViolation  // access to a Retiring block by a non-owner thread - fail fast
 	};
 
 	struct KERBECS_RUNTIME_API Violation {

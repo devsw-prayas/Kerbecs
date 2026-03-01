@@ -22,110 +22,179 @@
 #include "Kerbecs.h"
 #include "QuarantineQueue.h"
 #include "KerbecsDiagnostics.h"
+#include "MemoryZone.h"
+#include "RegistryUtils.h"
 
 namespace Kerbecs::Quarantine {
 	bool QuarantineQueue::init(
-		QuarantineEntry* p_Slots,
-		size_t              v_Capacity,
-		Tracing::AllocationRegistry* p_Registry,
-		KerbecsStats* p_Stats,
-		FreeCallback        p_FreeCallback) noexcept {
-		if (!p_Slots || v_Capacity == 0 || !p_Registry || !p_FreeCallback) return false;
+		size_t        v_Capacity,
+		KerbecsStats* p_Stats) noexcept {
+		if (v_Capacity == 0 || !p_Stats)
+			return false;
 
-		// Capacity must be a power of two
 		KERBECS_ASSERT((v_Capacity & (v_Capacity - 1)) == 0);
 
-		std::memset(p_Slots, 0, v_Capacity * sizeof(QuarantineEntry));
+		m_Slots = static_cast<QuarantineEntry*>(
+			Memory::allocate(v_Capacity * sizeof(QuarantineEntry)));
 
-		m_Slots = p_Slots;
+		if (!m_Slots)
+			return false;
+
+		std::memset(m_Slots, 0, v_Capacity * sizeof(QuarantineEntry));
+
 		m_Capacity = v_Capacity;
-		m_Registry = p_Registry;
 		m_Stats = p_Stats;
-		m_FreeCallback = p_FreeCallback;
+
 		m_Head.store(0, std::memory_order_relaxed);
 		m_Tail.store(0, std::memory_order_relaxed);
 
 		return true;
 	}
 
-	bool QuarantineQueue::enqueue(void* p_BlockBase, size_t v_BlockSize) noexcept {
-		if (!m_Slots || !p_BlockBase) return false;
-
-		size_t mask = m_Capacity - 1;
-
-		// CAS loop to claim the next tail slot
-		size_t tail = m_Tail.load(std::memory_order_relaxed);
-		for (;;) {
-			if (m_Tail.compare_exchange_weak(
-				tail,
-				tail + 1,
-				std::memory_order_acq_rel,
-				std::memory_order_relaxed)) {
-				break;
-			}
+	void QuarantineQueue::shutdown() noexcept {
+		if (m_Slots) {
+			KERBECS_UNUSED(Memory::release(
+				m_Slots,
+				m_Capacity * sizeof(QuarantineEntry)));
+			m_Slots = nullptr;
+			m_Capacity = 0;
 		}
 
-		size_t idx = tail & mask;
+		m_Head.store(0, std::memory_order_relaxed);
+		m_Tail.store(0, std::memory_order_relaxed);
+		m_Stats = nullptr;
+	}
+
+	bool QuarantineQueue::enqueue(
+		void* p_BlockBase,
+		size_t   v_BlockSize,
+		uint64_t v_Epoch,
+		void* p_Allocator,
+		void   (*p_DeallocThunk)(void*, void*, size_t)) noexcept {
+		if (!m_Slots || !p_BlockBase)
+			return false;
+
+		const size_t mask = m_Capacity - 1;
+		const size_t tail = m_Tail.fetch_add(1, std::memory_order_acq_rel);
+		const size_t idx = tail & mask;
+
 		QuarantineEntry& slot = m_Slots[idx];
 
-		if (slot.m_BlockBase != nullptr) {
-			_retireSlot(slot);
-			m_Head.fetch_add(1, std::memory_order_release);
-		}
+		// Check for saturation before writing. If the slot is still occupied
+		// the queue is full - fail fast, no graceful eviction.
+		void* existing = slot.m_BlockBase.load(std::memory_order_acquire);
+		if (existing != nullptr)
+			_onSaturation(); // never returns
 
-		// Write new entry
-		slot.m_BlockBase = p_BlockBase;
+		// Write all non-atomic fields BEFORE the atomic store of m_BlockBase.
+		// Any thread that observes a non-null m_BlockBase with acquire will
+		// also see these fields due to the release/acquire pair.
 		slot.m_BlockSize = v_BlockSize;
+		slot.m_Epoch = v_Epoch;
+		slot.m_Allocator = p_Allocator;
+		slot.m_DeallocThunk = p_DeallocThunk;
+
+		// Publish the entry. Release semantics guarantee the fields above
+		// are visible to any subsequent acquire load of m_BlockBase.
+		slot.m_BlockBase.store(p_BlockBase, std::memory_order_release);
 
 		statsOnQuarantineEnqueue(m_Stats);
 		return true;
 	}
 
-	bool QuarantineQueue::flushOne() noexcept {
-		if (!m_Slots) return false;
+	size_t QuarantineQueue::flushEligible(
+		Tracing::NodePoolSegment v_Segment,
+		size_t                   v_MaxCount) noexcept {
+		if (!m_Slots)
+			return 0;
 
-		size_t head = m_Head.load(std::memory_order_acquire);
-		size_t tail = m_Tail.load(std::memory_order_acquire);
+		m_FlushLock.lock();
 
-		if (head >= tail) return false;
-
-		size_t idx = head & (m_Capacity - 1);
-		QuarantineEntry& slot = m_Slots[idx];
-
-		if (slot.m_BlockBase == nullptr) return false;
-
-		_retireSlot(slot);
-
-		m_Head.fetch_add(1, std::memory_order_release);
-		return true;
-	}
-
-	size_t QuarantineQueue::flush(size_t v_MaxCount) noexcept {
 		size_t flushed = 0;
-		while (flushed < v_MaxCount && flushOne())
+
+		while (flushed < v_MaxCount) {
+			const size_t head = m_Head.load(std::memory_order_acquire);
+			const size_t tail = m_Tail.load(std::memory_order_acquire);
+
+			if (head >= tail)
+				break;
+
+			const size_t     idx = head & (m_Capacity - 1);
+			QuarantineEntry& slot = m_Slots[idx];
+
+			void* base = slot.m_BlockBase.load(std::memory_order_acquire);
+			if (!base)
+				break;
+
+			// Hardcoded 2-epoch delay.
+			if (slot.m_Epoch + 2 > MemoryZone::instance().m_Epoch.load(std::memory_order_acquire))
+				break;
+
+			_retireSlot(slot, v_Segment);
+
+			m_Head.fetch_add(1, std::memory_order_release);
 			flushed++;
+		}
+
+		m_FlushLock.unlock();
 		return flushed;
 	}
 
-	void QuarantineQueue::_retireSlot(QuarantineEntry& v_Entry)const noexcept {
-		KERBECS_ASSERT(v_Entry.m_BlockBase != nullptr);
+	void QuarantineQueue::_retireSlot(
+		QuarantineEntry& v_Entry,
+		Tracing::NodePoolSegment v_Segment) noexcept {
+		void* base = v_Entry.m_BlockBase.load(std::memory_order_acquire);
+		KERBECS_ASSERT(base != nullptr);
 
-		bool retired = m_Registry->retire(v_Entry.m_BlockBase);
-		KERBECS_DEBUG_ASSERT(retired);
-		KERBECS_UNUSED(retired);
+		// Scan the contiguous node pool for the matching block base and
+		// CAS Quarantine -> Dead directly. No back-pointer to AllocationRegistry
+		// needed - the pool is a plain array we can walk.
+		if (v_Segment.m_Pool && v_Segment.m_Capacity > 0) {
+			for (size_t i = 0; i < v_Segment.m_Capacity; ++i) {
+				Tracing::Internal::RegistryNode& node = v_Segment.m_Pool[i];
 
-		if (m_FreeCallback)
-			m_FreeCallback(v_Entry.m_BlockBase, v_Entry.m_BlockSize);
+				if (node.m_BlockBase != base)
+					continue;
+
+				Tracing::Internal::AllocationState expected =
+					Tracing::Internal::AllocationState::Quarantine;
+
+				KERBECS_UNUSED(node.m_State.compare_exchange_strong(
+					expected,
+					Tracing::Internal::AllocationState::Dead,
+					std::memory_order_acq_rel,
+					std::memory_order_acquire));
+
+				break;
+			}
+		}
+
+		// Type-erased deallocation. Thunk casts p_Allocator back to the
+		// concrete MemorySupport<A>* and calls deallocate.
+		if (v_Entry.m_DeallocThunk && v_Entry.m_Allocator)
+			v_Entry.m_DeallocThunk(v_Entry.m_Allocator, base, v_Entry.m_BlockSize);
 
 		statsOnQuarantineDequeue(m_Stats);
 
-		v_Entry.m_BlockBase = nullptr;
+		// Null the entry. m_BlockBase last with release so a concurrent
+		// enqueue that observes null knows the slot is fully cleared.
 		v_Entry.m_BlockSize = 0;
+		v_Entry.m_Epoch = 0;
+		v_Entry.m_Allocator = nullptr;
+		v_Entry.m_DeallocThunk = nullptr;
+
+		v_Entry.m_BlockBase.store(nullptr, std::memory_order_release);
+	}
+
+	KERBECS_NORETURN void QuarantineQueue::_onSaturation() const noexcept {
+		if (m_Stats)
+			statsOnViolation(m_Stats);
+		KERBECS_TRAP();
 	}
 
 	size_t QuarantineQueue::depth() const noexcept {
-		size_t tail = m_Tail.load(std::memory_order_acquire);
-		size_t head = m_Head.load(std::memory_order_acquire);
+		const size_t tail = m_Tail.load(std::memory_order_acquire);
+		const size_t head = m_Head.load(std::memory_order_acquire);
 		return (tail >= head) ? (tail - head) : 0;
 	}
 

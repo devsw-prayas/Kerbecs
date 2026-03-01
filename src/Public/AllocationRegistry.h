@@ -22,111 +22,155 @@
 #pragma once
 #include "Kerbecs.h"
 #include "KerbecsMemory.h"
+#include "RegistryUtils.h"
 #include "Violation.h"
+
 namespace Kerbecs::Tracing {
 
-	enum class KERBECS_RUNTIME_API AllocationState : uint8_t {
-		Empty = 0,
-		Live = 1,
-		Quarantine = 2,
-		Dead = 3
+	static constexpr size_t kBucketCount = 2048;    // 2^11
+	static constexpr size_t kNodeCapacity = 131072;  // 2^17
+
+	static_assert((kBucketCount& (kBucketCount - 1)) == 0);
+	static_assert((kNodeCapacity& (kNodeCapacity - 1)) == 0);
+
+	// =========================================================================
+	// NodePoolSegment
+	//
+	// Passed by the QuarantineQueue into its flush path so it can CAS
+	// Quarantine -> Dead directly on the node without any back-reference
+	// to AllocationRegistry as a class. The queue scans the contiguous
+	// pool for a matching m_BlockBase and transitions the state in place.
+	// =========================================================================
+	struct KERBECS_RUNTIME_API NodePoolSegment {
+		Internal::RegistryNode* m_Pool = nullptr;
+		size_t                  m_Capacity = 0;
 	};
 
-	struct KERBECS_RUNTIME_API alignas(128) RegistryEntry {
-		void* m_BlockBase = nullptr;
-		void* m_UserPtr = nullptr;  
-		size_t      m_BlockSize = 0;     
-		size_t      m_UserSize = 0;    
-		uint64_t    m_AllocatorID = 0;        
-		StackTrace  m_AllocTrace = {}; 
-		StackTrace  m_FreeTrace = {};      
-		const char* m_Name = nullptr;  
-		uint32_t    m_ThreadID = 0;     
-		std::atomic<AllocationState> m_State = AllocationState::Empty;
-
-	};
-
-	struct KERBECS_RUNTIME_API AllocationRegistry {
-
+	// =========================================================================
+	// AllocationRegistry
+	//
+	// Striped concurrent hash map over a contiguous bump-allocated node pool.
+	//
+	// Structure:
+	//   2048 buckets, each owning an intrusive linked list of RegistryNode*
+	//   into the pool. Nodes are prepended at insert and never removed from
+	//   the chain - they transition through AllocationState in place.
+	//
+	// Concurrency:
+	//   Reads  (find / findRange)  - fully lock-free.
+	//   Writes (insert)            - acquire per-bucket SpinLock, duplicate
+	//                                check, CAS prepend, release lock.
+	//   State transitions          - always CAS: acq_rel on success,
+	//                                acquire on failure. Never plain store.
+	//   m_LiveCount decrements     - fetch_sub(acq_rel) in shadowDestroy,
+	//                                no bucket lock needed.
+	//   Dtor cycle                 - beginRetiring / endRetiring, serialised
+	//                                by per-node m_DtorLock.
+	//
+	// findRange fix:
+	//   Receives the block base pointer (always available on the Shadow as
+	//   m_BlockBase). Hashes that to the correct bucket, then range-checks
+	//   m_UserPtr within that bucket's chain. This is correct because the
+	//   block base is what was inserted and hashed at insert time.
+	// =========================================================================
+	class AllocationRegistry {
+	public:
 		AllocationRegistry() = default;
+		~AllocationRegistry() = default;
 
 		AllocationRegistry(const AllocationRegistry&) = delete;
 		AllocationRegistry& operator=(const AllocationRegistry&) = delete;
-		AllocationRegistry(AllocationRegistry&&) = delete;
-		AllocationRegistry& operator=(AllocationRegistry&&) = delete;
 
-		KERBECS_NODISCARD_MSG("Cannot discard registry init result")
-			bool init(RegistryEntry* p_Slots, size_t v_Capacity) noexcept;
+		// Allocates the node pool via Memory::allocate. Must be called once
+		// during KerbecsMemoryZone::init before any other method.
+		bool init() noexcept;
 
-		KERBECS_NODISCARD_MSG("Cannot discard insert result")
-			bool insert(
-				void* p_BlockBase,
-				void* p_UserPtr,
-				size_t      v_BlockSize,
-				size_t      v_UserSize,
-				uint64_t    v_AllocatorID,
-				uint32_t    v_ThreadID,
-				const char* p_Name,
-				const StackTrace& v_AllocTrace) noexcept;
+		// Releases the node pool via Memory::release. Called at teardown.
+		void shutdown() noexcept;
 
-		KERBECS_NODISCARD_MSG("Cannot discard remove result")
-			bool remove(void* p_BlockBase, const StackTrace& v_FreeTrace)const noexcept;
+		// Insert a new Live node for p_BlockBase. Acquires the bucket lock,
+		// checks for duplicates, prepends via CAS. Returns false if the pool
+		// is exhausted or p_BlockBase is already tracked.
+		bool insert(
+			void* p_BlockBase,
+			void* p_UserPtr,
+			size_t            v_BlockSize,
+			size_t            v_UserSize,
+			uint64_t          v_AllocatorID,
+			uint32_t          v_ThreadID,
+			const char* p_Name,
+			const StackTrace& v_AllocTrace,
+			size_t            v_ObjectCount) noexcept;
 
+		// Attempt to begin the dtor cycle on p_BlockBase.
+		// Finds the node, calls tryLock on m_DtorLock.
+		//   - If the lock is already held: ThreadOwnership violation, fail fast.
+		//   - If state is not Live: appropriate violation, fail fast.
+		//   - On success: CAS Live -> Retiring (acq_rel/acquire), return node.
+		// Returns nullptr on any failure (violation already fired by caller).
+		Internal::RegistryNode* beginRetiring(
+			void* p_BlockBase,
+			uint32_t v_CallerThreadID) noexcept;
 
-		KERBECS_NODISCARD_MSG("Cannot discard retire result")
-			bool retire(void* p_BlockBase) noexcept;
+		// Complete the dtor cycle on p_BlockBase.
+		// Reads m_LiveCount with acquire.
+		//   - If > 0: CAS Retiring -> Live, release m_DtorLock. Block survives.
+		//   - If == 0: CAS Retiring -> Quarantine, enqueue into quarantine
+		//              (caller passes epoch + thunk info), release m_DtorLock.
+		// v_Epoch, v_Allocator, v_Thunk are forwarded to the quarantine enqueue
+		// and are only used on the Quarantine path.
+		void endRetiring(
+			void* p_BlockBase,
+			uint64_t v_Epoch,
+			void* p_Allocator,
+			void   (*p_Thunk)(void*, void*, size_t)) noexcept;
 
+		// CAS Quarantine -> Dead. Called directly by the QuarantineQueue
+		// flush path via NodePoolSegment - no AllocationRegistry pointer needed
+		// at that call site.
+		bool retire(void* p_BlockBase) noexcept;
 
-		KERBECS_NODISCARD_MSG("Cannot discard find result")
-			const RegistryEntry* find(const void* p_BlockBase) const noexcept;
+		// Lock-free reads. Hash p_BlockBase to its bucket, walk the chain.
+		// Dead nodes are skipped (state check on each node).
+		Internal::RegistryNode* find(const void* p_BlockBase) noexcept;
+		const Internal::RegistryNode* find(const void* p_BlockBase) const noexcept;
 
-		KERBECS_NODISCARD_MSG("Cannot discard find result")
-			RegistryEntry* find(const void* p_BlockBase) noexcept;
+		// Lock-free range lookup. p_BlockBase must be the block base pointer
+		// (from Shadow::m_BlockBase), not an interior user pointer.
+		// Hashes p_BlockBase to the correct bucket, then checks whether
+		// p_Address falls within [m_UserPtr, m_UserPtr + m_UserSize).
+		Internal::RegistryNode* findRange(const void* p_BlockBase, const void* p_Address) noexcept;
+		const Internal::RegistryNode* findRange(const void* p_BlockBase, const void* p_Address) const noexcept;
 
-
-		KERBECS_NODISCARD_MSG("Cannot discard range find result")
-			const RegistryEntry* findRange(const void* p_Address) const noexcept;
-
-		template<typename Fn>
-		void reportLeaks(Fn&& v_Callback) const noexcept {
-			if (!m_Slots || m_Capacity == 0) return;
-			for (size_t i = 0; i < m_Capacity; i++) {
-				const RegistryEntry& entry = m_Slots[i];
-				if (entry.m_State.load(std::memory_order_acquire) == AllocationState::Live)
-					v_Callback(entry);
-			}
+		size_t liveCount() const noexcept {
+			return m_Count.load(std::memory_order_relaxed);
 		}
 
-		KERBECS_NODISCARD_MSG("Cannot discard live count")
-			size_t liveCount() const noexcept;
-
-		KERBECS_NODISCARD_MSG("Cannot discard quarantine count")
-			size_t quarantineCount() const noexcept;
-
-		KERBECS_NODISCARD_MSG("Cannot discard capacity")
-			size_t capacity() const noexcept { return m_Capacity; }
-
-		KERBECS_NODISCARD_MSG("Cannot discard load factor")
-			float loadFactor() const noexcept;
+		// Returns a segment descriptor for the node pool so the quarantine
+		// flush path can CAS Quarantine -> Dead without a back-pointer here.
+		NodePoolSegment poolSegment() const noexcept {
+			return { m_NodePool, kNodeCapacity };
+		}
 
 	private:
-		RegistryEntry* m_Slots = nullptr;
-		size_t               m_Capacity = 0;      // must be power of two
-		std::atomic<size_t>  m_Count = 0;       // live + quarantine entries
+		alignas(64) Internal::Bucket m_Buckets[kBucketCount];
 
-		KERBECS_FORCEINLINE size_t _hash(const void* p_BlockBase) const noexcept {
-			uintptr_t key = reinterpret_cast<uintptr_t>(p_BlockBase) >> 4;
+		alignas(64) std::atomic<size_t> m_NodeCursor{ 0 };
+		std::atomic<size_t>             m_Count{ 0 };
+
+		Internal::RegistryNode* m_NodePool = nullptr;
+
+		// Fibonacci hashing - shift by 6 to ignore sub-cache-line bits,
+		// multiply by golden ratio, mask to bucket count.
+		KERBECS_FORCEINLINE static size_t _index(const void* p) noexcept {
+			uintptr_t key = reinterpret_cast<uintptr_t>(p) >> 6;
 			key *= 0x9e3779b97f4a7c15ULL;
-			return static_cast<size_t>(key >> (64 - _log2(m_Capacity)));
+			return key & (kBucketCount - 1);
 		}
 
-		KERBECS_FORCEINLINE static size_t _log2(size_t v) noexcept {
-			size_t r = 0;
-			while (v >>= 1) r++;
-			return r;
-		}
-
-		size_t _probe(const void* p_BlockBase) const noexcept;
+		// Bump-allocate one node from the pool. Atomic, never returns the
+		// same index twice. Returns nullptr if the pool is exhausted.
+		Internal::RegistryNode* _allocateNode() noexcept;
 	};
 
-} 
+}

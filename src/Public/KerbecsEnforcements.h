@@ -60,4 +60,10 @@ namespace Kerbecs::Enforcement {
 		{ h.reset() }    -> std::same_as<void>;
 	};
 
+	template<typename A>
+	concept AllocatorConcept =
+		requires(A a, size_t bytes, size_t align, void* p) {
+			{ a.allocate(bytes, align) } noexcept -> std::same_as<void*>;
+			{ a.deallocate(p, bytes) } noexcept -> std::same_as<void>;
+	};
 }
