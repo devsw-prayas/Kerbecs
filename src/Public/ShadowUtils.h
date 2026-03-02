@@ -20,33 +20,32 @@
 */
 
 #pragma once
-#include <KerbecsCompiler.h>
+#include "Kerbecs.h"
 
-#if defined(KERBECS_SHARED)
+namespace Kerbecs::Shadow::Utils {
 
-#if KERBECS_COMPILER_MSVC
-#if defined(KERBECS_BUILDING_RUNTIME)
-#define KERBECS_RUNTIME_API __declspec(dllexport)
-#else
-#define KERBECS_RUNTIME_API __declspec(dllimport)
-#endif
-#elif KERBECS_COMPILER_CLANG || KERBECS_COMPILER_GCC
-#define KERBECS_RUNTIME_API __attribute__((visibility("default")))
-#else
-#define KERBECS_RUNTIME_API
-#endif
+	
+	enum class KERBECS_RUNTIME_API MemoryState : uint8_t {
+		UNINITIALIZED, 
+		CONSTRUCTED, 
+		DESTROYED,    
+		CORRUPTED      
+	};
 
-#else
-// Static build -> no import/export
-#define KERBECS_RUNTIME_API
-#endif
 
-#include <concepts>
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <atomic>		   
-#include <algorithm>
-#include <limits>
-#include <bit>
-#include <mutex>
+	enum class KERBECS_RUNTIME_API ThreadPolicy : uint8_t {
+		Strict,   // must be freed on the same thread that allocated
+		Flexible  // cross-thread frees allowed (warn-only)
+	};
+
+
+	KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard validation check for tombstone")
+	bool verifyTombstone(const void* p_Memory, size_t v_Length);
+
+	KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard validation check for redzone ")
+	bool verifyRedzone(const void* p_User, size_t v_Length);
+
+	KERBECS_RUNTIME_API	KERBECS_NODISCARD_MSG("Cannot discard validation check for canaries")
+	bool verifyCanaries(const void* p_User, size_t v_Length);
+
+} 

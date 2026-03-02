@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+ cmake_minimum_required(VERSION 3.20)
 project(Kerbecs)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -6,11 +6,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-add_library(Kerbecs SHARED 
-    src/Private/Kerbecs.cpp src/Public/Kerbecs.h
-)
+file(GLOB_RECURSE KERBECS_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/Public/*.h")
+file(GLOB_RECURSE KERBECS_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/Private/*.cpp")
+
+add_library(Kerbecs SHARED ${KERBECS_HEADERS} ${KERBECS_SOURCES})
 
 target_include_directories(Kerbecs PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Public)
 
 set_target_properties(Kerbecs PROPERTIES FOLDER "Base")
+target_precompile_headers(Kerbecs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/Public/Kerbecs.h)
+
+target_compile_definitions(Kerbecs PRIVATE
+    SHADOWZONE_SIZE=1500
+    GLOBALZONE_SIZE=500
+    STATICZONE_SIZE=500
+    REGISTRY_CAPACITY=128
+    QUARANTINE_CAPACITY=256
+    KERBECS_SHARED
+    KERBECS_BUILDING_RUNTIME
+)
