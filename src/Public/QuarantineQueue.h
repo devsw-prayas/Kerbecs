@@ -22,13 +22,10 @@
 #pragma once
 #include "AllocationRegistry.h"
 #include "Kerbecs.h"
-#include "KerbecsMemory.h"
 #include "KerbecsStats.h"
-#include "Violation.h"
 
 namespace Kerbecs::Quarantine {
 
-	// =========================================================================
 	// QuarantineEntry
 	//
 	// Represents one in-flight block sitting in the quarantine ring buffer.
@@ -44,7 +41,6 @@ namespace Kerbecs::Quarantine {
 	// type is still in scope. The quarantine calls:
 	//   m_DeallocThunk(m_Allocator, blockBase, blockSize)
 	// at flush time without ever knowing the allocator type.
-	// =========================================================================
 	struct KERBECS_RUNTIME_API alignas(64) QuarantineEntry {
 		// Written before m_BlockBase - plain (non-atomic) fields.
 		size_t   m_BlockSize = 0;
@@ -56,8 +52,7 @@ namespace Kerbecs::Quarantine {
 		// guarantees all fields above are visible.
 		std::atomic<void*> m_BlockBase{ nullptr };
 	};
-
-	// =========================================================================
+	
 	// QuarantineQueue
 	//
 	// Fixed-capacity ring buffer holding blocks between logical free and
@@ -80,7 +75,6 @@ namespace Kerbecs::Quarantine {
 	//              concurrent callers racing on m_Head advancement.
 	//   depth / full / empty - advisory only, may be stale by the time
 	//              the caller acts on the result.
-	// =========================================================================
 	struct KERBECS_RUNTIME_API QuarantineQueue {
 
 		QuarantineQueue() = default;
@@ -149,4 +143,4 @@ namespace Kerbecs::Quarantine {
 		KerbecsStats* m_Stats = nullptr;
 	};
 
-} // namespace Kerbecs::Quarantine
+} 

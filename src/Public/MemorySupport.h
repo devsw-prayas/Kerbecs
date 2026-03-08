@@ -30,7 +30,7 @@ namespace Kerbecs::Shadow::Internal {
 	// AllocatorConcept). Stores A* rather than A by value - the pointed-to
 	// allocator is owned externally (typically as a member of KerbecsMemoryZone).
 	//
-	// Null checks are the caller's responsibility - Shadow is expected to
+	// Null checks are the caller's responsibility - ShadowPtr is expected to
 	// validate before use and fire the appropriate violation if m_Allocator
 	// is null.
 	//
@@ -47,7 +47,7 @@ namespace Kerbecs::Shadow::Internal {
 	//
 	// MemorySupport instances for the three default allocators
 	// (ShadowzoneAllocator, StaticAllocator, GlobalAllocator) live as
-	// singleton members on KerbecsMemoryZone. Shadow holds a MemorySupport<A>*
+	// singleton members on KerbecsMemoryZone. ShadowPtr holds a MemorySupport<A>*
 	// pointing at the appropriate zone member.
 	template<typename A>
 		requires Enforcement::AllocatorConcept<A>
@@ -84,4 +84,4 @@ namespace Kerbecs::Shadow::Internal {
 		}
 	};
 
-} // namespace Kerbecs::Shadow::Internal
+}

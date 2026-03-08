@@ -22,7 +22,6 @@
 #pragma once
 #include "Kerbecs.h"
 #include <atomic>
-#include <cstdint>
 
 namespace Kerbecs {
 

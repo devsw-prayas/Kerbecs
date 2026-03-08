@@ -17,7 +17,7 @@ target_include_directories(Kerbecs PUBLIC
 set_target_properties(Kerbecs PROPERTIES FOLDER "Base")
 target_precompile_headers(Kerbecs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/Public/Kerbecs.h)
 
-target_compile_definitions(Kerbecs PRIVATE
+target_compile_definitions(Kerbecs PUBLIC
     SHADOWZONE_SIZE=1500
     GLOBALZONE_SIZE=500
     STATICZONE_SIZE=500

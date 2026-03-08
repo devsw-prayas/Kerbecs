@@ -46,7 +46,7 @@ namespace Kerbecs::Layout {
 	//
 	// Offsets (4 fields):
 	//   m_RedzoneOffsetLeading   - always 0
-	//   m_UserDataOffset         0 REDZONE_SIZE, aligned up to alignof(T)
+	//   m_UserDataOffset         - 0 REDZONE_SIZE, aligned up to alignof(T)
 	//   m_RedzoneOffsetTrailing  - userDataOffset + payloadSize
 	//   m_MetaDataOffset          after trailing redzone, aligned up to alignof(NormalMetaData)
 	// =========================================================================
@@ -75,7 +75,7 @@ namespace Kerbecs::Layout {
 
 			auto* base = static_cast<std::byte*>(p_Block);
 			Offsets o{};
-
+			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
 			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
 
@@ -175,7 +175,7 @@ namespace Kerbecs::Layout {
 
 			auto* base = static_cast<std::byte*>(p_Block);
 			Offsets o{};
-
+			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
 			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
 
@@ -253,7 +253,7 @@ namespace Kerbecs::Layout {
 	//  [ Trailing canary  | CANARY_SIZE bytes                       ]
 	//  [ Trailing redzone | REDZONE_SIZE bytes                      ]
 	//
-	// There is no in-block metadata. The Shadow<StaticLayout,...> handle itself
+	// There is no in-block metadata. The ShadowPtr<StaticLayout,...> handle itself
 	// IS the metadata - it lives in the static region and persists for the
 	// lifetime of the process.
 	//
@@ -292,7 +292,7 @@ namespace Kerbecs::Layout {
 
 			auto* base = static_cast<std::byte*>(p_Block);
 			Offsets o{};
-
+			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
 			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
 

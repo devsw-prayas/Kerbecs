@@ -68,12 +68,12 @@ namespace Kerbecs::Tracing {
 	//                                by per-node m_DtorLock.
 	//
 	// findRange fix:
-	//   Receives the block base pointer (always available on the Shadow as
+	//   Receives the block base pointer (always available on the ShadowPtr as
 	//   m_BlockBase). Hashes that to the correct bucket, then range-checks
 	//   m_UserPtr within that bucket's chain. This is correct because the
 	//   block base is what was inserted and hashed at insert time.
 	// =========================================================================
-	class AllocationRegistry {
+	class KERBECS_RUNTIME_API AllocationRegistry {
 	public:
 		AllocationRegistry() = default;
 		~AllocationRegistry() = default;
@@ -136,7 +136,7 @@ namespace Kerbecs::Tracing {
 		const Internal::RegistryNode* find(const void* p_BlockBase) const noexcept;
 
 		// Lock-free range lookup. p_BlockBase must be the block base pointer
-		// (from Shadow::m_BlockBase), not an interior user pointer.
+		// (from ShadowPtr::m_BlockBase), not an interior user pointer.
 		// Hashes p_BlockBase to the correct bucket, then checks whether
 		// p_Address falls within [m_UserPtr, m_UserPtr + m_UserSize).
 		Internal::RegistryNode* findRange(const void* p_BlockBase, const void* p_Address) noexcept;

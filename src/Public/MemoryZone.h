@@ -66,7 +66,6 @@ namespace Kerbecs::MemoryZone {
 		void* m_End; // inclusive
 	};
 
-	// =========================================================================
 	// KerbecsMemoryZone
 	//
 	// Singleton owning the entire Kerbecs VA reservation and all subsystems.
@@ -85,7 +84,7 @@ namespace Kerbecs::MemoryZone {
 	//
 	// The registry and quarantine self-allocate their own storage via
 	// Memory::allocate - they do not carve from any zone.
-	// =========================================================================
+	// 
 	struct alignas(128) KERBECS_RUNTIME_API KerbecsMemoryZone final {
 		// Zone base pointers - set after reservation, never changed.
 		void* m_MemoryZone = nullptr; // base of entire reserved VA block
@@ -96,6 +95,7 @@ namespace Kerbecs::MemoryZone {
 		// Three lazy-commit bump allocators - one per zone.
 		// Owned directly by the zone. MemorySupport wrappers hold pointers
 		// to these members and provide the type-erased thunk for quarantine.
+
 		Allocators::ShadowzoneAllocator m_ShadowzoneAllocatorImpl;
 		Allocators::StaticAllocator     m_StaticAllocatorImpl;
 		Allocators::GlobalAllocator     m_GlobalAllocatorImpl;
@@ -132,7 +132,7 @@ namespace Kerbecs::MemoryZone {
 	// Heap-allocated singleton to avoid static destructor ordering issues.
 	KERBECS_FORCEINLINE KERBECS_RUNTIME_API
 		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
-		static KerbecsMemoryZone& instance() {
+		KerbecsMemoryZone& instance() {
 		static KerbecsMemoryZone* s_Instance = new KerbecsMemoryZone();
 		return *s_Instance;
 	}
@@ -155,7 +155,7 @@ namespace Kerbecs::MemoryZone {
 		return instance().m_Quarantine;
 	}
 
-	void* KERBECS_RUNTIME_API mapToShadow(void* p_User, size_t v_Size) noexcept;
+	KERBECS_RUNTIME_API void*  mapToShadow(void* p_User, size_t v_Size) noexcept;
 	KERBECS_RUNTIME_API UserRange mapToUser(void* p_Shadow) noexcept;
 
 	KERBECS_RUNTIME_API bool shadowPoison(void* p_UserPtr, size_t v_Size) noexcept;

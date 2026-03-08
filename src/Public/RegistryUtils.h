@@ -24,15 +24,7 @@
 
 namespace Kerbecs::Tracing::Internal {
 
-	// =========================================================================
-	// Thread identity
-	//
-	// Each thread gets a stable uint32_t ID derived from the address of a
-	// thread-local anchor byte. TLS pages are allocated per-thread by the OS
-	// so &t_ThreadAnchor is unique per thread for the lifetime of the process.
-	// A Fibonacci hash collapses the 64-bit address to 32 bits with good
-	// distribution. No atomic counter, no OS call, no heap allocation.
-	// =========================================================================
+
 	inline thread_local const uint8_t t_ThreadAnchor = 0;
 
 	KERBECS_FORCEINLINE uint32_t currentThreadID() noexcept {
@@ -42,7 +34,6 @@ namespace Kerbecs::Tracing::Internal {
 
 
 
-	// =========================================================================
 	// AllocationState
 	//
 	//  Empty      - node is unused in the pool, never been assigned
@@ -59,7 +50,6 @@ namespace Kerbecs::Tracing::Internal {
 	//  Dead       - node is fully retired. Slot remains in the bucket chain
 	//               but is skipped by all lookups. Memory has been released
 	//               via the stored dealloc thunk.
-	// =========================================================================
 	enum class KERBECS_RUNTIME_API AllocationState : uint8_t {
 		Empty = 0,
 		Live = 1,

@@ -43,19 +43,20 @@ namespace Kerbecs {
 		WildPointer,         // access to address not in AllocationRegistry
 		ThreadOwnership,      // destroy() called from wrong thread (Strict policy)
 		QuarantineSaturation,     // quarantine ring buffer is full - fail fast
-		RetiredBoundaryViolation  // access to a Retiring block by a non-owner thread - fail fast
+		RetiredBoundaryViolation,  // access to a Retiring block by a non-owner thread - fail fast
+		None
 	};
 
 	struct KERBECS_RUNTIME_API Violation {
-		ViolationKind m_Kind;         // classification
-		const char* m_Name;         // named allocation tag (string literal, not owned)
-		void* m_Address;      // faulting address
-		void* m_BlockBase;    // start of the allocation block
-		size_t        m_BlockSize;    // total size of the allocation block
-		StackTrace    m_AllocSite;    // call stack at allocation time
-		StackTrace    m_FreeSite;     // call stack at free time (if applicable)
-		StackTrace    m_AccessSite;   // call stack at violation detection site
-		uint64_t      m_Timestamp;    // __rdtsc() at detection time
-		uint32_t      m_ThreadID;     // thread that triggered the violation
+		ViolationKind m_Kind = ViolationKind::None;         // classification
+		const char* m_Name = nullptr;         // named allocation tag (string literal, not owned)
+		void* m_Address = nullptr;      // faulting address
+		void* m_BlockBase = nullptr;    // start of the allocation block
+		size_t        m_BlockSize{};    // total size of the allocation block
+		StackTrace    m_AllocSite{};    // call stack at allocation time
+		StackTrace    m_FreeSite{};     // call stack at free time (if applicable)
+		StackTrace    m_AccessSite{};   // call stack at violation detection site
+		uint64_t      m_Timestamp{};    // __rdtsc() at detection time
+		uint32_t      m_ThreadID{};     // thread that triggered the violation
 	};
 } 

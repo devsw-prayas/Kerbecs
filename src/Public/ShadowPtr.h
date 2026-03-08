@@ -39,7 +39,7 @@ namespace Kerbecs::Shadow {
 		&& Enforcement::LoggerConcept<O>
 		&& Enforcement::HashAccumulatorConcept<H>
 		&& Enforcement::AllocatorConcept<AC>
-		struct KERBECS_RUNTIME_API Shadow {
+		struct KERBECS_RUNTIME_API ShadowPtr {
 		private:
 			using layout_ = L;
 			using shadow_ = S;
@@ -61,13 +61,13 @@ namespace Kerbecs::Shadow {
 			StackTrace                m_AllocTrace = {};      // allocation call site
 			StackTrace                m_FreeTrace = {};      // free call site
 			// Non-owning pointer to the MemorySupport wrapper for this shadow's
-			// allocator. Shadow fires a violation if this is null at destroy time.
+			// allocator. ShadowPtr fires a violation if this is null at destroy time.
 			Internal::MemorySupport<AC>* m_UserAllocator = nullptr;
 	};
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
 	KERBECS_FORCEINLINE void _reportViolation(
-		const Shadow<LP, SM, LG, HA, AC>* p_Shadow,
+		const ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow,
 		ViolationKind                  v_Kind,
 		void* p_FaultAddr) noexcept {
 		statsOnViolation(&MemoryZone::instance().m_Stats);
@@ -90,51 +90,48 @@ namespace Kerbecs::Shadow {
 		v.m_Timestamp = 0;
 #endif
 
-		p_Shadow->m_Logger->submit(v);
+		p_Shadow->m_Logger->report(v);
 	}
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
 	KERBECS_FORCEINLINE void shadowRawFill(
-		Shadow<LP, SM, LG, HA, AC>* p_Shadow,
+		ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow,
 		size_t v_Offset, size_t v_Length, uint8_t v_Value) noexcept {
 		std::memset(static_cast<std::byte*>(p_Shadow->m_BlockBase) + v_Offset, v_Value, v_Length);
 	}
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowPoison(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
+	void shadowPoison(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
 		shadowRawFill(p_Shadow, v_Offset, v_Length, static_cast<uint8_t>(MemoryZone::POISONED));
 		void* userPtr = static_cast<std::byte*>(p_Shadow->m_BlockBase) + v_Offset;
-		MemoryZone::shadowPoison(userPtr, v_Length);
 		if (p_Shadow->m_Map)
 			p_Shadow->m_Map->poison(userPtr, v_Length);
 		statsOnPoison(&MemoryZone::instance().m_Stats, v_Length);
 	}
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowUnpoison(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
+	void shadowUnpoison(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
 		shadowRawFill(p_Shadow, v_Offset, v_Length, static_cast<uint8_t>(MemoryZone::UNPOISONED));
 		void* userPtr = static_cast<std::byte*>(p_Shadow->m_BlockBase) + v_Offset;
-		MemoryZone::shadowUnpoison(userPtr, v_Length);
-		if (p_Shadow->m_Map)
+			if (p_Shadow->m_Map)
 			p_Shadow->m_Map->unpoison(userPtr, v_Length);
 		statsOnUnpoison(&MemoryZone::instance().m_Stats, v_Length);
 	}
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowRedzone(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
+	void shadowRedzone(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
 		shadowRawFill(p_Shadow, v_Offset, v_Length, static_cast<uint8_t>(MemoryZone::REDZONE));
 	}
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowDeRedzone(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
+	void shadowDeRedzone(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
 		shadowRawFill(p_Shadow, v_Offset, v_Length, 0);
 	}
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowTombstone(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
+	void shadowTombstone(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Offset, size_t v_Length) noexcept {
 		shadowRawFill(p_Shadow, v_Offset, v_Length, static_cast<uint8_t>(MemoryZone::TOMBSTONE));
 		void* userPtr = static_cast<std::byte*>(p_Shadow->m_BlockBase) + v_Offset;
-		MemoryZone::shadowPoison(userPtr, v_Length);
 		if (p_Shadow->m_Map)
 			p_Shadow->m_Map->poison(userPtr, v_Length);
 	}
@@ -142,7 +139,7 @@ namespace Kerbecs::Shadow {
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
 	KERBECS_NODISCARD_MSG("Cannot discard shadow state")
 		Utils::MemoryState shadowStateOf(
-			const Shadow<LP, SM, LG, HA, AC>* p_Shadow,
+			const ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow,
 			size_t v_Offset, size_t v_Size) noexcept {
 		if (!p_Shadow || !p_Shadow->m_BlockBase || !p_Shadow->m_Map)
 			return Utils::MemoryState::CORRUPTED;
@@ -158,14 +155,14 @@ namespace Kerbecs::Shadow {
 	}
 
 	template<typename LP, typename SM, typename LG, typename HA, typename AC>
-	KERBECS_MAYBE_UNUSED bool shadowVerifyGuards(const Shadow<LP, SM, LG, HA, AC>* p_Shadow) noexcept {
+	KERBECS_MAYBE_UNUSED bool shadowVerifyGuards(const ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow) noexcept {
 		if (!p_Shadow || !p_Shadow->m_BlockBase) return false;
 		return LP::verifyGuards(p_Shadow->m_BlockBase, p_Shadow->m_Offsets, p_Shadow->m_TotalSize);
 	}
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
 	KERBECS_MAYBE_UNUSED bool shadowAllocate(
-		Shadow<LP, SM, LG, HA, AC>* p_Shadow,
+		ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow,
 		size_t v_Count = 1) noexcept {
 		if (!p_Shadow) return false;
 
@@ -191,7 +188,7 @@ namespace Kerbecs::Shadow {
 	}
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
-	KERBECS_MAYBE_UNUSED bool shadowInit(Shadow<LP, SM, LG, HA, AC>* p_Shadow, void* p_Block, size_t v_BlockSize, size_t v_Count = 1) noexcept {
+	KERBECS_MAYBE_UNUSED bool shadowInit(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, void* p_Block, size_t v_BlockSize, size_t v_Count = 1) noexcept {
 		if (!p_Shadow || !p_Block) return false;
 		if (v_Count > SIZE_MAX / sizeof(T)) return false;
 
@@ -215,8 +212,8 @@ namespace Kerbecs::Shadow {
 		// ---- Alignment Check (on payload, NOT block base) ----
 		if (reinterpret_cast<uintptr_t>(payload) % alignof(T) != 0) {
 			_reportViolation(p_Shadow,
-							 ViolationKind::AlignmentViolation,
-							 payload);
+				ViolationKind::AlignmentViolation,
+				payload);
 			return false;
 		}
 
@@ -294,7 +291,7 @@ namespace Kerbecs::Shadow {
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC, typename... Args>
 	KERBECS_MAYBE_UNUSED bool shadowConstruct(
-		Shadow<LP, SM, LG, HA, AC>* p_Shadow, Args&&... u_Args) noexcept {
+		ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, Args&&... u_Args) noexcept {
 		if (!p_Shadow || !p_Shadow->m_RawPtr) return false;
 
 		if (reinterpret_cast<uintptr_t>(p_Shadow->m_RawPtr) % alignof(T) != 0) {
@@ -309,7 +306,7 @@ namespace Kerbecs::Shadow {
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC, typename... Args>
 	KERBECS_MAYBE_UNUSED bool shadowConstructAt(
-		Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Idx, Args&&... u_Args) noexcept {
+		ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Idx, Args&&... u_Args) noexcept {
 		if (!p_Shadow || !p_Shadow->m_RawPtr) return false;
 
 		size_t offset = v_Idx * sizeof(T);
@@ -327,11 +324,11 @@ namespace Kerbecs::Shadow {
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
 	KERBECS_MAYBE_UNUSED bool shadowDestroy(
-		Shadow<LP, SM, LG, HA, AC>* p_Shadow,
+		ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow,
 		size_t v_Idx = 0) noexcept {
 		if (!p_Shadow || !p_Shadow->m_RawPtr) return false;
 
-		// ---- Allocator null check - Shadow owns this violation ----
+		// ---- Allocator null check - ShadowPtr owns this violation ----
 		if (!p_Shadow->m_UserAllocator) {
 			_reportViolation(p_Shadow, ViolationKind::WildPointer, p_Shadow->m_BlockBase);
 			return false;
@@ -348,17 +345,17 @@ namespace Kerbecs::Shadow {
 
 		if (state == Utils::MemoryState::DESTROYED) {
 			_reportViolation(p_Shadow, ViolationKind::DoubleFree,
-							 static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
+				static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
 			return false;
 		}
 		if (state == Utils::MemoryState::UNINITIALIZED) {
 			_reportViolation(p_Shadow, ViolationKind::UseBeforeInit,
-							 static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
+				static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
 			return false;
 		}
 		if (state == Utils::MemoryState::CORRUPTED) {
 			_reportViolation(p_Shadow, ViolationKind::MetadataCorruption,
-							 static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
+				static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
 			return false;
 		}
 
@@ -451,7 +448,7 @@ namespace Kerbecs::Shadow {
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
 	KERBECS_NODISCARD_MSG("Cannot discard shadow state")
 		Utils::MemoryState shadowGetMemoryState(
-			const Shadow<LP, SM, LG, HA, AC>* p_Shadow,
+			const ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow,
 			size_t v_Index = 0) noexcept {
 		if (!p_Shadow || !p_Shadow->m_BlockBase)
 			return Utils::MemoryState::CORRUPTED;
@@ -472,7 +469,7 @@ namespace Kerbecs::Shadow {
 			if (!node) {
 				// Either wild pointer or already retired block
 				_reportViolation(
-					const_cast<Shadow<LP, SM, LG, HA, AC>*>(p_Shadow),
+					const_cast<ShadowPtr<LP, SM, LG, HA, AC>*>(p_Shadow),
 					ViolationKind::WildPointer,
 					payloadAddr);
 
@@ -486,7 +483,7 @@ namespace Kerbecs::Shadow {
 				// that won m_DtorLock may access it. All others fail fast.
 				if (Tracing::Internal::currentThreadID() != node->m_ThreadID) {
 					_reportViolation(
-						const_cast<Shadow<LP, SM, LG, HA, AC>*>(p_Shadow),
+						const_cast<ShadowPtr<LP, SM, LG, HA, AC>*>(p_Shadow),
 						ViolationKind::RetiredBoundaryViolation,
 						payloadAddr);
 					KERBECS_TRAP();
@@ -495,7 +492,7 @@ namespace Kerbecs::Shadow {
 
 			if (state == Tracing::Internal::AllocationState::Quarantine) {
 				_reportViolation(
-					const_cast<Shadow<LP, SM, LG, HA, AC>*>(p_Shadow),
+					const_cast<ShadowPtr<LP, SM, LG, HA, AC>*>(p_Shadow),
 					ViolationKind::UseAfterFree,
 					payloadAddr);
 
@@ -503,7 +500,7 @@ namespace Kerbecs::Shadow {
 			}
 		}
 
-		// ---- Shadow state check (block-relative) ----
+		// ---- ShadowPtr state check (block-relative) ----
 		Utils::MemoryState state =
 			shadowStateOf(p_Shadow, offset, sizeof(T));
 
@@ -513,7 +510,7 @@ namespace Kerbecs::Shadow {
 		// ---- Guard verification ----
 		if (!shadowVerifyGuards(p_Shadow)) {
 			_reportViolation(
-				const_cast<Shadow<LP, SM, LG, HA, AC>*>(p_Shadow),
+				const_cast<ShadowPtr<LP, SM, LG, HA, AC>*>(p_Shadow),
 				ViolationKind::BufferOverflow,
 				p_Shadow->m_BlockBase);
 
@@ -525,7 +522,7 @@ namespace Kerbecs::Shadow {
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
 	KERBECS_NODISCARD_MSG("Cannot discard shadow state")
 		Utils::MemoryState shadowVerifyBlockState(
-			const Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Count) noexcept {
+			const ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Count) noexcept {
 		for (size_t i = 0; i < v_Count; i++) {
 			Utils::MemoryState s = shadowGetMemoryState<T>(p_Shadow, i);
 			if (s != Utils::MemoryState::DESTROYED) return s;
@@ -534,17 +531,17 @@ namespace Kerbecs::Shadow {
 	}
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowPoisonObject(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Index = 0) noexcept {
+	void shadowPoisonObject(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Index = 0) noexcept {
 		shadowPoison(p_Shadow, p_Shadow->m_Offsets.m_UserDataOffset + v_Index * sizeof(T), sizeof(T));
 	}
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowUnpoisonObject(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Index = 0) noexcept {
+	void shadowUnpoisonObject(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Index = 0) noexcept {
 		shadowUnpoison(p_Shadow, p_Shadow->m_Offsets.m_UserDataOffset + v_Index * sizeof(T), sizeof(T));
 	}
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC>
-	void shadowTombstoneObject(Shadow<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Index = 0) noexcept {
+	void shadowTombstoneObject(ShadowPtr<LP, SM, LG, HA, AC>* p_Shadow, size_t v_Index = 0) noexcept {
 		shadowTombstone(p_Shadow, p_Shadow->m_Offsets.m_UserDataOffset + v_Index * sizeof(T), sizeof(T));
 	}
 }
