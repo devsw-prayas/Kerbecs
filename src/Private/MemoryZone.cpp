@@ -25,6 +25,82 @@
 #include "KerbecsDiagnostics.h"
 
 namespace Kerbecs::MemoryZone {
+
+    KerbecsMemoryZone& instance() noexcept {
+        static KerbecsMemoryZone* s_Instance = new KerbecsMemoryZone();
+        return *s_Instance;
+    }
+
+    KerbecsStats& stats() noexcept {
+        return instance().m_Stats;
+    }
+
+    Tracing::AllocationRegistry& registry() noexcept {
+        return instance().m_Registry;
+    }
+
+    Quarantine::QuarantineQueue& quarantine() noexcept {
+        return instance().m_Quarantine;
+    }
+
+    bool initShadowzone() noexcept {
+        return instance().init();
+    }
+
+    bool teardownShadowzone() noexcept {
+        auto& zone = instance();
+
+        if (zone.m_Shutdown.load(std::memory_order_acquire))
+            return false;
+
+        zone.m_Quarantine.flushEligible(
+            zone.m_Registry.poolSegment(),
+            SIZE_MAX);
+
+        zone.m_Quarantine.shutdown();
+
+        {
+            const Tracing::NodePoolSegment seg = zone.m_Registry.poolSegment();
+            bool leakFound = false;
+
+            if (seg.m_Pool) {
+                for (size_t i = 0; i < seg.m_Capacity; ++i) {
+                    const auto& node = seg.m_Pool[i];
+                    const auto state = node.m_State.load(std::memory_order_acquire);
+
+                    if (state == Tracing::Internal::AllocationState::Live ||
+                        state == Tracing::Internal::AllocationState::Retiring ||
+                        state == Tracing::Internal::AllocationState::Quarantine) {
+                        statsOnViolation(&zone.m_Stats);
+                        leakFound = true;
+                    }
+                }
+            }
+
+            if (leakFound)
+                KERBECS_TRAP();
+        }
+
+        zone.m_Registry.shutdown();
+
+        constexpr size_t totalBytes =
+            (static_cast<size_t>(SHADOWZONE_SIZE) +
+             static_cast<size_t>(GLOBALZONE_SIZE) +
+             static_cast<size_t>(STATICZONE_SIZE)) * Memory::GIBI_BYTE;
+
+        KERBECS_UNUSED(Memory::release(zone.m_MemoryZone, totalBytes));
+
+        zone.m_MemoryZone = nullptr;
+        zone.m_ShadowZone = nullptr;
+        zone.m_GlobalZone = nullptr;
+        zone.m_StaticZone = nullptr;
+
+        zone.m_Initialized.store(false, std::memory_order_release);
+        zone.m_Shutdown.store(true, std::memory_order_release);
+
+        return true;
+    }
+
     bool KerbecsMemoryZone::init() noexcept {
         static std::mutex s_InitMutex;
         std::lock_guard<std::mutex> lock(s_InitMutex);

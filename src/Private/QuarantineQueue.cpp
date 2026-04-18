@@ -127,7 +127,8 @@ namespace Kerbecs::Quarantine {
 				break;
 
 			// Hardcoded 2-epoch delay.
-			if (slot.m_Epoch + 2 > MemoryZone::instance().m_Epoch.load(std::memory_order_acquire))
+			const uint64_t curEpoch = MemoryZone::instance().m_Epoch.load(std::memory_order_acquire);
+			if (slot.m_Epoch + 2 > curEpoch)
 				break;
 
 			_retireSlot(slot, v_Segment);
@@ -150,23 +151,24 @@ namespace Kerbecs::Quarantine {
 		// CAS Quarantine -> Dead directly. No back-pointer to AllocationRegistry
 		// needed - the pool is a plain array we can walk.
 		if (v_Segment.m_Pool && v_Segment.m_Capacity > 0) {
+			bool found = false;
 			for (size_t i = 0; i < v_Segment.m_Capacity; ++i) {
 				Tracing::Internal::RegistryNode& node = v_Segment.m_Pool[i];
 
 				if (node.m_BlockBase != base)
 					continue;
 
+				found = true;
 				Tracing::Internal::AllocationState expected =
 					Tracing::Internal::AllocationState::Quarantine;
-
-				KERBECS_UNUSED(node.m_State.compare_exchange_strong(
+				node.m_State.compare_exchange_strong(
 					expected,
 					Tracing::Internal::AllocationState::Dead,
 					std::memory_order_acq_rel,
-					std::memory_order_acquire));
-
+					std::memory_order_acquire);
 				break;
 			}
+			KERBECS_UNUSED(found);
 		}
 
 		// Type-erased deallocation. Thunk casts p_Allocator back to the

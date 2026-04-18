@@ -24,9 +24,7 @@
 #include "KerbecsDiagnostics.h"
 
 namespace Kerbecs::Tracing {
-	// -------------------------------------------------------------------------
 	// init / shutdown
-	// -------------------------------------------------------------------------
 
 	bool AllocationRegistry::init() noexcept {
 		m_NodePool = static_cast<Internal::RegistryNode*>(
@@ -56,9 +54,7 @@ namespace Kerbecs::Tracing {
 		m_Count.store(0, std::memory_order_relaxed);
 	}
 
-	// -------------------------------------------------------------------------
 	// _allocateNode
-	// -------------------------------------------------------------------------
 
 	Internal::RegistryNode* AllocationRegistry::_allocateNode() noexcept {
 		size_t idx = m_NodeCursor.fetch_add(1, std::memory_order_relaxed);
@@ -71,7 +67,6 @@ namespace Kerbecs::Tracing {
 		return &m_NodePool[idx];
 	}
 
-	// -------------------------------------------------------------------------
 	// insert
 	//
 	// Acquires the bucket lock to prevent lost-update on concurrent prepends
@@ -81,7 +76,6 @@ namespace Kerbecs::Tracing {
 	// The node is fully initialised before its state is set to Live and before
 	// it is published to the bucket head. m_State store uses release so that
 	// any acquire load of m_Head that reaches this node also sees all fields.
-	// -------------------------------------------------------------------------
 
 	bool AllocationRegistry::insert(
 		void* p_BlockBase,
@@ -160,7 +154,6 @@ namespace Kerbecs::Tracing {
 		return true;
 	}
 
-	// -------------------------------------------------------------------------
 	// beginRetiring
 	//
 	// Attempts to begin the dtor cycle. Returns the node pointer on success
@@ -168,12 +161,10 @@ namespace Kerbecs::Tracing {
 	// Returns nullptr and fires the appropriate violation on any failure:
 	//   - tryLock fails  -> ThreadOwnership (concurrent dtor attempt)
 	//   - state != Live  -> appropriate violation (DoubleFree, UseAfterFree...)
-	// -------------------------------------------------------------------------
 
 	Internal::RegistryNode* AllocationRegistry::beginRetiring(
 		void* p_BlockBase,
 		uint32_t v_CallerThreadID) noexcept {
-
 		if (!p_BlockBase)
 			return nullptr;
 
@@ -208,7 +199,6 @@ namespace Kerbecs::Tracing {
 		return node;
 	}
 
-	// -------------------------------------------------------------------------
 	// endRetiring
 	//
 	// Called after the dtor cycle completes (destructor called, tombstone
@@ -221,7 +211,6 @@ namespace Kerbecs::Tracing {
 	// The dtor lock is released after the transition regardless of path.
 	// The quarantine enqueue happens before lock release so that the block
 	// cannot be accessed again before it is safely in the queue.
-	// -------------------------------------------------------------------------
 
 	void AllocationRegistry::endRetiring(
 		void* p_BlockBase,
@@ -280,12 +269,10 @@ namespace Kerbecs::Tracing {
 		KERBECS_UNUSED(p_Thunk);
 	}
 
-	// -------------------------------------------------------------------------
 	// retire  (Quarantine -> Dead)
 	//
 	// Called by the QuarantineQueue flush path via NodePoolSegment scan,
 	// or directly here. CAS Quarantine -> Dead.
-	// -------------------------------------------------------------------------
 
 	bool AllocationRegistry::retire(void* p_BlockBase) noexcept {
 		if (!p_BlockBase)
@@ -308,9 +295,7 @@ namespace Kerbecs::Tracing {
 		return true;
 	}
 
-	// -------------------------------------------------------------------------
 	// find  (lock-free)
-	// -------------------------------------------------------------------------
 
 	Internal::RegistryNode*
 		AllocationRegistry::find(const void* p_BlockBase) noexcept {
@@ -359,13 +344,11 @@ namespace Kerbecs::Tracing {
 		return nullptr;
 	}
 
-	// -------------------------------------------------------------------------
 	// findRange  (lock-free)
 	//
 	// p_BlockBase is hashed to find the correct bucket (same hash as insert).
 	// p_Address is the interior address being range-checked against
 	// [m_UserPtr, m_UserPtr + m_UserSize) within that bucket.
-	// -------------------------------------------------------------------------
 
 	Internal::RegistryNode* AllocationRegistry::findRange(const void* p_BlockBase, const void* p_Address) noexcept {
 		if (!p_BlockBase || !p_Address) return nullptr;
@@ -378,7 +361,8 @@ namespace Kerbecs::Tracing {
 		while (node) {
 			const auto state = node->m_State.load(std::memory_order_acquire);
 			if (state != Internal::AllocationState::Dead &&
-				state != Internal::AllocationState::Empty) {
+				state != Internal::AllocationState::Empty &&
+				node->m_BlockBase == p_BlockBase) {
 				const uintptr_t start = reinterpret_cast<uintptr_t>(node->m_UserPtr);
 
 				if (addr >= start && (addr - start) < node->m_UserSize) return node;
@@ -407,7 +391,8 @@ namespace Kerbecs::Tracing {
 		while (node) {
 			const auto state = node->m_State.load(std::memory_order_acquire);
 			if (state != Internal::AllocationState::Dead &&
-				state != Internal::AllocationState::Empty) {
+				state != Internal::AllocationState::Empty &&
+				node->m_BlockBase == p_BlockBase) {
 				const uintptr_t start =
 					reinterpret_cast<uintptr_t>(node->m_UserPtr);
 

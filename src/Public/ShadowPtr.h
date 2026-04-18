@@ -31,6 +31,7 @@
 #include "MemorySupport.h"
 
 #include <cstdint>
+#include <iostream>
 
 namespace Kerbecs::Shadow {
 	template<typename L, typename S, typename O, typename H, typename AC>
@@ -146,6 +147,7 @@ namespace Kerbecs::Shadow {
 
 		void* userPtr = static_cast<std::byte*>(p_Shadow->m_BlockBase) + v_Offset;
 
+
 		size_t poisoned = p_Shadow->m_Map->countPoisoned(userPtr, v_Size);
 		if (poisoned == v_Size)                return Utils::MemoryState::UNINITIALIZED;
 		if (poisoned > 0 && poisoned < v_Size) return Utils::MemoryState::CORRUPTED;
@@ -176,7 +178,7 @@ namespace Kerbecs::Shadow {
 		size_t payloadSize = v_Count * sizeof(T);
 		size_t blockSize = LP::blockSize(payloadSize, alignof(T));
 
-		void* block = p_Shadow->m_UserAllocator->allocate(blockSize, alignof(std::max_align_t));
+		void* block = p_Shadow->m_UserAllocator->allocate(blockSize, alignof(T));
 
 		if (!block) return false;
 		p_Shadow->m_UserSize = payloadSize;
@@ -459,6 +461,7 @@ namespace Kerbecs::Shadow {
 		// ---- Compute payload pointer for registry check ----
 		void* payloadAddr =
 			static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset;
+
 
 		auto& zone = MemoryZone::instance();
 

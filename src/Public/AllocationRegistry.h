@@ -26,27 +26,24 @@
 #include "Violation.h"
 
 namespace Kerbecs::Tracing {
-
 	static constexpr size_t kBucketCount = 2048;    // 2^11
 	static constexpr size_t kNodeCapacity = 131072;  // 2^17
 
 	static_assert((kBucketCount& (kBucketCount - 1)) == 0);
 	static_assert((kNodeCapacity& (kNodeCapacity - 1)) == 0);
 
-	// =========================================================================
 	// NodePoolSegment
 	//
 	// Passed by the QuarantineQueue into its flush path so it can CAS
 	// Quarantine -> Dead directly on the node without any back-reference
 	// to AllocationRegistry as a class. The queue scans the contiguous
 	// pool for a matching m_BlockBase and transitions the state in place.
-	// =========================================================================
+
 	struct KERBECS_RUNTIME_API NodePoolSegment {
 		Internal::RegistryNode* m_Pool = nullptr;
 		size_t                  m_Capacity = 0;
 	};
 
-	// =========================================================================
 	// AllocationRegistry
 	//
 	// Striped concurrent hash map over a contiguous bump-allocated node pool.
@@ -72,7 +69,7 @@ namespace Kerbecs::Tracing {
 	//   m_BlockBase). Hashes that to the correct bucket, then range-checks
 	//   m_UserPtr within that bucket's chain. This is correct because the
 	//   block base is what was inserted and hashed at insert time.
-	// =========================================================================
+
 	class KERBECS_RUNTIME_API AllocationRegistry {
 	public:
 		AllocationRegistry() = default;
@@ -172,5 +169,4 @@ namespace Kerbecs::Tracing {
 		// same index twice. Returns nullptr if the pool is exhausted.
 		Internal::RegistryNode* _allocateNode() noexcept;
 	};
-
 }
