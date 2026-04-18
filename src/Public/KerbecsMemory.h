@@ -21,8 +21,6 @@
 
 #pragma once
 #include "Kerbecs.h"
-#include <cstddef>
-#include <cstdint>
 
 namespace Kerbecs::Memory {
 

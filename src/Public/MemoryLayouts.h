@@ -26,30 +26,19 @@
 #include "ShadowUtils.h"
 #include "KerbecsEnforcements.h"
 
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
 
 #include "KerbecsDiagnostics.h"
 
 namespace Kerbecs::Layout {
 
-	// =========================================================================
-	// NormalLayout
-	//
-	// Block structure:
-	//
-	//  [ Leading redzone  | REDZONE_SIZE bytes                      ]
-	//  [ User payload     | payloadSize bytes, aligned to alignof(T)]
-	//  [ Trailing redzone | REDZONE_SIZE bytes                      ]
-	//  [ NormalMetaData   | sizeof(NormalMetaData), aligned         ]
-	//
-	// Offsets (4 fields):
-	//   m_RedzoneOffsetLeading   - always 0
-	//   m_UserDataOffset         0 REDZONE_SIZE, aligned up to alignof(T)
-	//   m_RedzoneOffsetTrailing  - userDataOffset + payloadSize
-	//   m_MetaDataOffset          after trailing redzone, aligned up to alignof(NormalMetaData)
-	// =========================================================================
+	/*
+	 * NormalLayout
+	 * 
+	 * [ Leading redzone  | REDZONE_SIZE bytes                      ]
+	 * [ User payload     | payloadSize bytes, aligned to alignof(T)]
+	 * [ Trailing redzone | REDZONE_SIZE bytes                      ]
+	 * [ NormalMetaData   | sizeof(NormalMetaData), aligned         ]
+	 */
 
 	struct KERBECS_RUNTIME_API NormalLayout {
 
@@ -75,18 +64,17 @@ namespace Kerbecs::Layout {
 
 			auto* base = static_cast<std::byte*>(p_Block);
 			Offsets o{};
-
+			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
-
 			o.m_UserDataOffset = Memory::alignUp(MemoryZone::REDZONE_SIZE, v_Align);
+			std::memset(base, MemoryZone::REDZONE, o.m_UserDataOffset);
 
 			o.m_RedzoneOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
 			o.m_MetaDataOffset = Memory::alignUp(
 				o.m_RedzoneOffsetTrailing + MemoryZone::REDZONE_SIZE,
 				alignof(MemoryZone::NormalMetaData));
 
+			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, o.m_MetaDataOffset - o.m_RedzoneOffsetTrailing);
 			::new (base + o.m_MetaDataOffset) MemoryZone::NormalMetaData{};
 
 			return o;
@@ -112,28 +100,17 @@ namespace Kerbecs::Layout {
 	static_assert(Enforcement::LayoutPolicyConcept<NormalLayout>);
 
 
-	// =========================================================================
-	// EnhancedLayout
-	//
-	// Block structure:
-	//
-	//  [ Leading redzone          | REDZONE_SIZE bytes                           ]
-	//  [ Leading EnhancedMetaData | sizeof(EnhancedMetaData), aligned            ]
-	//  [ Leading canary           | CANARY_SIZE bytes                            ]
-	//  [ User payload             | payloadSize bytes, aligned to alignof(T)     ]
-	//  [ Trailing canary          | CANARY_SIZE bytes                            ]
-	//  [ Trailing EnhancedMetaData| sizeof(EnhancedMetaData), aligned            ]
-	//  [ Trailing redzone         | REDZONE_SIZE bytes                           ]
-	//
-	// Offsets (7 fields):
-	//   m_RedzoneOffsetLeading    - always 0
-	//   m_MetaDataOffsetLeading   - after leading redzone, aligned
-	//   m_CanaryOffsetLeading     - after leading metadata
-	//   m_UserDataOffset          - after leading canary, aligned to T
-	//   m_CanaryOffsetTrailing    - after payload
-	//   m_MetaDataOffsetTrailing  - after trailing canary, aligned
-	//   m_RedzoneOffsetTrailing   - after trailing metadata
-	// =========================================================================
+	/*
+	 * EnhancedLayout
+	 * 
+	 * [ Leading redzone          | REDZONE_SIZE bytes                           ]
+	 * [ Leading EnhancedMetaData | sizeof(EnhancedMetaData), aligned            ]
+	 * [ Leading canary           | CANARY_SIZE bytes                            ]
+	 * [ User payload             | payloadSize bytes, aligned to alignof(T)     ]
+	 * [ Trailing canary          | CANARY_SIZE bytes                            ]
+	 * [ Trailing EnhancedMetaData| sizeof(EnhancedMetaData), aligned            ]
+	 * [ Trailing redzone         | REDZONE_SIZE bytes                           ]
+	 */
 
 	struct KERBECS_RUNTIME_API EnhancedLayout {
 
@@ -175,31 +152,33 @@ namespace Kerbecs::Layout {
 
 			auto* base = static_cast<std::byte*>(p_Block);
 			Offsets o{};
-
+			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
-
 			o.m_MetaDataOffsetLeading = Memory::alignUp(
 				MemoryZone::REDZONE_SIZE,
 				alignof(MemoryZone::EnhancedMetaData));
+			std::memset(base, MemoryZone::REDZONE, o.m_MetaDataOffsetLeading);
+
 			::new (base + o.m_MetaDataOffsetLeading) MemoryZone::EnhancedMetaData{};
 
 			o.m_CanaryOffsetLeading = o.m_MetaDataOffsetLeading + sizeof(MemoryZone::EnhancedMetaData);
-			_stampCanary(base + o.m_CanaryOffsetLeading, MemoryZone::CANARY_SIZE);
+
 			o.m_UserDataOffset = Memory::alignUp(
 				o.m_CanaryOffsetLeading + MemoryZone::CANARY_SIZE,
 				v_Align);
+			_stampCanary(base + o.m_CanaryOffsetLeading, o.m_UserDataOffset - o.m_CanaryOffsetLeading);
 
 			o.m_CanaryOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
-			_stampCanary(base + o.m_CanaryOffsetTrailing, MemoryZone::CANARY_SIZE);
 
 			o.m_MetaDataOffsetTrailing = Memory::alignUp(
 				o.m_CanaryOffsetTrailing + MemoryZone::CANARY_SIZE,
 				alignof(MemoryZone::EnhancedMetaData));
+			_stampCanary(base + o.m_CanaryOffsetTrailing, o.m_MetaDataOffsetTrailing - o.m_CanaryOffsetTrailing);
 			::new (base + o.m_MetaDataOffsetTrailing) MemoryZone::EnhancedMetaData{};
 
 			o.m_RedzoneOffsetTrailing = o.m_MetaDataOffsetTrailing + sizeof(MemoryZone::EnhancedMetaData);
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
+			const size_t totalSize = v_BlockSize;
+			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
 
 			return o;
 		}
@@ -242,28 +221,17 @@ namespace Kerbecs::Layout {
 	static_assert(Enforcement::LayoutPolicyConcept<EnhancedLayout>);
 
 
-	// =========================================================================
-	// StaticLayout
-	//
-	// Block structure:
-	//
-	//  [ Leading redzone  | REDZONE_SIZE bytes                      ]
-	//  [ Leading canary   | CANARY_SIZE bytes                       ]
-	//  [ User payload     | payloadSize bytes, aligned to alignof(T)]
-	//  [ Trailing canary  | CANARY_SIZE bytes                       ]
-	//  [ Trailing redzone | REDZONE_SIZE bytes                      ]
-	//
-	// There is no in-block metadata. The Shadow<StaticLayout,...> handle itself
-	// IS the metadata - it lives in the static region and persists for the
-	// lifetime of the process.
-	//
-	// Offsets (5 fields):
-	//   m_RedzoneOffsetLeading   - always 0
-	//   m_CanaryOffsetLeading    - after leading redzone
-	//   m_UserDataOffset         - after leading canary, aligned to T
-	//   m_CanaryOffsetTrailing   - after payload
-	//   m_RedzoneOffsetTrailing  - after trailing canary
-	// =========================================================================
+	/*
+	 * StaticLayout
+	 * 
+	 * [ Leading redzone  | REDZONE_SIZE bytes                      ]
+	 * [ Leading canary   | CANARY_SIZE bytes                       ]
+	 * [ User payload     | payloadSize bytes, aligned to alignof(T)]
+	 * [ Trailing canary  | CANARY_SIZE bytes                       ]
+	 * [ Trailing redzone | REDZONE_SIZE bytes                      ]
+	 * 
+	 * No in-block metadata; handle persists in static region.
+	 */
 
 	struct KERBECS_RUNTIME_API StaticLayout {
 
@@ -292,22 +260,23 @@ namespace Kerbecs::Layout {
 
 			auto* base = static_cast<std::byte*>(p_Block);
 			Offsets o{};
-
+			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
-
 			o.m_CanaryOffsetLeading = MemoryZone::REDZONE_SIZE;
-			_stampCanary(base + o.m_CanaryOffsetLeading, MemoryZone::CANARY_SIZE);
+
+			std::memset(base, MemoryZone::REDZONE, o.m_CanaryOffsetLeading);
 
 			o.m_UserDataOffset = Memory::alignUp(
 				o.m_CanaryOffsetLeading + MemoryZone::CANARY_SIZE,
 				v_Align);
+			_stampCanary(base + o.m_CanaryOffsetLeading, o.m_UserDataOffset - o.m_CanaryOffsetLeading);
 
 			o.m_CanaryOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
-			_stampCanary(base + o.m_CanaryOffsetTrailing, MemoryZone::CANARY_SIZE);
 
 			o.m_RedzoneOffsetTrailing = o.m_CanaryOffsetTrailing + MemoryZone::CANARY_SIZE;
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
+			_stampCanary(base + o.m_CanaryOffsetTrailing, o.m_RedzoneOffsetTrailing - o.m_CanaryOffsetTrailing);
+			const size_t totalSize = v_BlockSize;
+			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
 
 			return o;
 		}

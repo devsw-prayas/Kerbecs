@@ -22,25 +22,18 @@
 #pragma once
 #include "Kerbecs.h"
 #include "MemoryLayouts.h"
-#include "Shadow.h"
+#include "ShadowPtr.h"
+#include "ShadowMap.h"
 #include "MemoryZone.h"
-#include "KerbecsAllocators.h"
 
 namespace Kerbecs {
 
-    // =========================================================================
-    // KerbecsDestructor
-    //
-    // RAII wrapper that calls shadowDestroy<T> on the Shadow handle at scope
-    // exit. Carries HA and AC alongside SM and LG so the full Shadow type
-    // (including allocator param) is correctly resolved.
-    // =========================================================================
-    template<typename T, typename SM, typename LG, typename HA, typename AC>
+    template<typename T, typename SM, typename LG, typename HA, typename AC, Shadow::Utils::ThreadPolicy TP = Shadow::Utils::ThreadPolicy::Flexible>
     struct KERBECS_RUNTIME_API KerbecsDestructor {
-        Shadow::Shadow<Layout::StaticLayout, SM, LG, HA, AC>* m_Handle = nullptr;
+        Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* m_Handle = nullptr;
 
         explicit KerbecsDestructor(
-            Shadow::Shadow<Layout::StaticLayout, SM, LG, HA, AC>* p_Handle) noexcept
+            Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* p_Handle) noexcept
             : m_Handle(p_Handle) {
         }
 
@@ -51,11 +44,11 @@ namespace Kerbecs {
 
         ~KerbecsDestructor() {
             if (!m_Handle || !m_Handle->m_RawPtr) return;
-            Shadow::shadowDestroy<T>(m_Handle);
+            Shadow::shadowDestroy<T, Layout::StaticLayout, SM, LG, HA, AC, TP>(m_Handle);
         }
     };
 
-} // namespace Kerbecs
+}
 
 #ifndef KERBECS_SHADOW_MAP_TYPE
 #error "KERBECS_SHADOW_MAP_TYPE must be defined before including KerbecsStatic.h"
@@ -75,20 +68,18 @@ namespace Kerbecs {
 
 // Full Shadow handle type - all five params.
 #define KERBECS_SHADOW_HANDLE_TYPE(Type)            \
-    ::Kerbecs::Shadow::Shadow<                      \
+    ::Kerbecs::Shadow::ShadowPtr<                   \
         ::Kerbecs::Layout::StaticLayout,            \
         KERBECS_SHADOW_MAP_TYPE,                    \
         KERBECS_LOGGER_TYPE,                        \
         KERBECS_HASH_TYPE,                          \
         KERBECS_ALLOCATOR_TYPE>                     \
 
-// =========================================================================
 // KERBECS_STATIC_INIT_IMPL
 //
 // Internal implementation macro shared by KERBECS_PERSISTENT and
 // KERBECS_GLOBAL. AllocExpr is the expression that produces the block
 // pointer - callers pass the appropriate zone allocator member.
-// =========================================================================
 #define KERBECS_STATIC_INIT_IMPL(Type, name, tag, allocMember, counter, ...)        \
     struct _KerbecsInit_##counter {                                                  \
         _KerbecsInit_##counter() {                                                   \
@@ -101,7 +92,7 @@ namespace Kerbecs {
                 ::Kerbecs::MemoryZone::instance()                                    \
                     .allocMember.allocate(blockSz, alignof(Type));                   \
             KERBECS_ASSERT(block && "Zone exhausted");                               \
-            name.m_Map           = nullptr;                                          \
+			name.m_Map = KerbecsShadowMap{};                    \
             name.m_Logger        = nullptr;                                          \
             name.m_Name          = tag;                                              \
             name.m_UserAllocator =                                                   \
@@ -121,12 +112,10 @@ namespace Kerbecs {
         KERBECS_HASH_TYPE,                                                           \
         KERBECS_ALLOCATOR_TYPE> _kerbecsDestructor_##counter(&name)
 
-// =========================================================================
 // KERBECS_PERSISTENT
 //
 // Allocates from m_StaticAllocator (StaticZone). Suitable for objects that
 // must persist for the lifetime of the process.
-// =========================================================================
 #define KERBECS_PERSISTENT(Type, name, tag, ...)                    \
     KERBECS_SHADOW_HANDLE_TYPE(Type) name;                          \
     KERBECS_STATIC_INIT_IMPL(Type, name, tag, m_StaticAllocator,    \
@@ -135,12 +124,10 @@ namespace Kerbecs {
 #define KERBECS_PERSISTENT_DECL(Type, name)                         \
     extern KERBECS_SHADOW_HANDLE_TYPE(Type) name
 
-// =========================================================================
 // KERBECS_GLOBAL
 //
 // Allocates from m_GlobalAllocator (GlobalZone). Suitable for module-level
 // singletons with controlled lifetime.
-// =========================================================================
 #define KERBECS_GLOBAL(Type, name, tag, ...)                        \
     static KERBECS_SHADOW_HANDLE_TYPE(Type) name;                   \
     KERBECS_STATIC_INIT_IMPL(Type, name, tag, m_GlobalAllocator,    \

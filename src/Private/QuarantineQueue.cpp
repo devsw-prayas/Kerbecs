@@ -66,11 +66,12 @@ namespace Kerbecs::Quarantine {
 	}
 
 	bool QuarantineQueue::enqueue(
-		void* p_BlockBase,
-		size_t   v_BlockSize,
-		uint64_t v_Epoch,
-		void* p_Allocator,
-		void   (*p_DeallocThunk)(void*, void*, size_t)) noexcept {
+		void*                            p_BlockBase,
+		size_t                           v_BlockSize,
+		uint64_t                         v_Epoch,
+		void*                            p_Allocator,
+		void                           (*p_DeallocThunk)(void*, void*, size_t),
+		Tracing::Internal::RegistryNode* p_Node) noexcept {
 		if (!m_Slots || !p_BlockBase)
 			return false;
 
@@ -93,6 +94,7 @@ namespace Kerbecs::Quarantine {
 		slot.m_Epoch = v_Epoch;
 		slot.m_Allocator = p_Allocator;
 		slot.m_DeallocThunk = p_DeallocThunk;
+		slot.m_Node = p_Node;
 
 		// Publish the entry. Release semantics guarantee the fields above
 		// are visible to any subsequent acquire load of m_BlockBase.
@@ -104,7 +106,8 @@ namespace Kerbecs::Quarantine {
 
 	size_t QuarantineQueue::flushEligible(
 		Tracing::NodePoolSegment v_Segment,
-		size_t                   v_MaxCount) noexcept {
+		size_t                   v_MaxCount,
+		bool                     v_Force) noexcept {
 		if (!m_Slots)
 			return 0;
 
@@ -126,9 +129,12 @@ namespace Kerbecs::Quarantine {
 			if (!base)
 				break;
 
-			// Hardcoded 2-epoch delay.
-			if (slot.m_Epoch + 2 > MemoryZone::instance().m_Epoch.load(std::memory_order_acquire))
-				break;
+			// Bypass epoch check if force-flushing (used at teardown).
+			if (!v_Force) {
+				const uint64_t curEpoch = MemoryZone::instance().m_Epoch.load(std::memory_order_acquire);
+				if (slot.m_Epoch + 2 > curEpoch)
+					break;
+			}
 
 			_retireSlot(slot, v_Segment);
 
@@ -146,27 +152,37 @@ namespace Kerbecs::Quarantine {
 		void* base = v_Entry.m_BlockBase.load(std::memory_order_acquire);
 		KERBECS_ASSERT(base != nullptr);
 
-		// Scan the contiguous node pool for the matching block base and
-		// CAS Quarantine -> Dead directly. No back-pointer to AllocationRegistry
-		// needed - the pool is a plain array we can walk.
-		if (v_Segment.m_Pool && v_Segment.m_Capacity > 0) {
+		// Prefer O(1) retirement via stored node pointer if available.
+		if (v_Entry.m_Node) {
+			Tracing::Internal::AllocationState expected =
+				Tracing::Internal::AllocationState::Quarantine;
+
+			v_Entry.m_Node->m_State.compare_exchange_strong(
+				expected,
+				Tracing::Internal::AllocationState::Dead,
+				std::memory_order_acq_rel,
+				std::memory_order_acquire);
+		}
+		else if (v_Segment.m_Pool && v_Segment.m_Capacity > 0) {
+			// Fallback to O(N) linear scan if the node pointer is missing.
+			bool found = false;
 			for (size_t i = 0; i < v_Segment.m_Capacity; ++i) {
 				Tracing::Internal::RegistryNode& node = v_Segment.m_Pool[i];
 
 				if (node.m_BlockBase != base)
 					continue;
 
+				found = true;
 				Tracing::Internal::AllocationState expected =
 					Tracing::Internal::AllocationState::Quarantine;
-
-				KERBECS_UNUSED(node.m_State.compare_exchange_strong(
+				node.m_State.compare_exchange_strong(
 					expected,
 					Tracing::Internal::AllocationState::Dead,
 					std::memory_order_acq_rel,
-					std::memory_order_acquire));
-
+					std::memory_order_acquire);
 				break;
 			}
+			KERBECS_UNUSED(found);
 		}
 
 		// Type-erased deallocation. Thunk casts p_Allocator back to the
@@ -174,6 +190,7 @@ namespace Kerbecs::Quarantine {
 		if (v_Entry.m_DeallocThunk && v_Entry.m_Allocator)
 			v_Entry.m_DeallocThunk(v_Entry.m_Allocator, base, v_Entry.m_BlockSize);
 
+		statsOnDestroy(m_Stats, v_Entry.m_BlockSize);
 		statsOnQuarantineDequeue(m_Stats);
 
 		// Null the entry. m_BlockBase last with release so a concurrent
@@ -182,6 +199,7 @@ namespace Kerbecs::Quarantine {
 		v_Entry.m_Epoch = 0;
 		v_Entry.m_Allocator = nullptr;
 		v_Entry.m_DeallocThunk = nullptr;
+		v_Entry.m_Node = nullptr;
 
 		v_Entry.m_BlockBase.store(nullptr, std::memory_order_release);
 	}

@@ -169,7 +169,7 @@ namespace Kerbecs::Memory {
 			return commit(reinterpret_cast<void*>(pageBase), PAGE_SIZE, 0);
 		}
 
-		case PageState::Free:	 KERBECS_FALLTHROUGH
+		case PageState::Free:
 		case PageState::Unknown: break;
 		}
 		KERBECS_UNREACHABLE();

@@ -21,6 +21,7 @@
 
 #pragma once
 #include "Kerbecs.h"
+#include "Violation.h"
 
 
 namespace Kerbecs::Enforcement {
@@ -33,7 +34,7 @@ namespace Kerbecs::Enforcement {
 		{ m.toShadow(p, n) }      -> std::same_as<void*>;
 	};
 
-	struct Violation;
+
 
 	template<typename T>
 	concept LoggerConcept = requires(T logger, const Violation & v) {

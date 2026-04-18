@@ -21,8 +21,6 @@
 
 #pragma once
 #include "Kerbecs.h"
-#include <cstdint>
-#include <intrin.h>
 
 #include "KerbecsEnforcements.h"
 

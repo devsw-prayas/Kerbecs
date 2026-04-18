@@ -22,13 +22,10 @@
 #pragma once
 #include "AllocationRegistry.h"
 #include "Kerbecs.h"
-#include "KerbecsMemory.h"
 #include "KerbecsStats.h"
-#include "Violation.h"
 
 namespace Kerbecs::Quarantine {
 
-	// =========================================================================
 	// QuarantineEntry
 	//
 	// Represents one in-flight block sitting in the quarantine ring buffer.
@@ -44,20 +41,21 @@ namespace Kerbecs::Quarantine {
 	// type is still in scope. The quarantine calls:
 	//   m_DeallocThunk(m_Allocator, blockBase, blockSize)
 	// at flush time without ever knowing the allocator type.
-	// =========================================================================
 	struct KERBECS_RUNTIME_API alignas(64) QuarantineEntry {
 		// Written before m_BlockBase - plain (non-atomic) fields.
 		size_t   m_BlockSize = 0;
 		uint64_t m_Epoch = 0;
-		void* m_Allocator = nullptr;
+		void*    m_Allocator = nullptr;
 		void   (*m_DeallocThunk)(void*, void*, size_t) = nullptr;
+
+		// Associated registry node for O(1) retirement.
+		Tracing::Internal::RegistryNode* m_Node = nullptr;
 
 		// Published last with release. A non-null load with acquire
 		// guarantees all fields above are visible.
 		std::atomic<void*> m_BlockBase{ nullptr };
 	};
-
-	// =========================================================================
+	
 	// QuarantineQueue
 	//
 	// Fixed-capacity ring buffer holding blocks between logical free and
@@ -80,7 +78,6 @@ namespace Kerbecs::Quarantine {
 	//              concurrent callers racing on m_Head advancement.
 	//   depth / full / empty - advisory only, may be stale by the time
 	//              the caller acts on the result.
-	// =========================================================================
 	struct KERBECS_RUNTIME_API QuarantineQueue {
 
 		QuarantineQueue() = default;
@@ -104,11 +101,12 @@ namespace Kerbecs::Quarantine {
 		// Saturation (slot still occupied) fires QuarantineSaturation
 		// violation and traps - fail fast, no graceful eviction.
 		bool enqueue(
-			void* p_BlockBase,
-			size_t   v_BlockSize,
-			uint64_t v_Epoch,
-			void* p_Allocator,
-			void   (*p_DeallocThunk)(void*, void*, size_t)) noexcept;
+			void*                            p_BlockBase,
+			size_t                           v_BlockSize,
+			uint64_t                         v_Epoch,
+			void*                            p_Allocator,
+			void                           (*p_DeallocThunk)(void*, void*, size_t),
+			Tracing::Internal::RegistryNode* p_Node = nullptr) noexcept;
 
 		// Flush all entries whose epoch satisfies:
 		//   slot.m_Epoch + 2 <= v_CurrentEpoch
@@ -121,7 +119,8 @@ namespace Kerbecs::Quarantine {
 		// Pass SIZE_MAX to drain the queue completely (used at teardown).
 		size_t flushEligible(
 			Tracing::NodePoolSegment       v_Segment,
-			size_t                         v_MaxCount = SIZE_MAX) noexcept;
+			size_t                         v_MaxCount = SIZE_MAX,
+			bool                           v_Force = false) noexcept;
 
 		size_t depth()    const noexcept;
 		bool   full()     const noexcept;
@@ -149,4 +148,4 @@ namespace Kerbecs::Quarantine {
 		KerbecsStats* m_Stats = nullptr;
 	};
 
-} // namespace Kerbecs::Quarantine
+} 

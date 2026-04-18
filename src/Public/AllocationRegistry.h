@@ -23,30 +23,28 @@
 #include "Kerbecs.h"
 #include "KerbecsMemory.h"
 #include "RegistryUtils.h"
+#include "ShadowUtils.h"
 #include "Violation.h"
 
 namespace Kerbecs::Tracing {
-
 	static constexpr size_t kBucketCount = 2048;    // 2^11
-	static constexpr size_t kNodeCapacity = 131072;  // 2^17
+	static constexpr size_t kNodeCapacity = 4194304; // 2^22
 
 	static_assert((kBucketCount& (kBucketCount - 1)) == 0);
 	static_assert((kNodeCapacity& (kNodeCapacity - 1)) == 0);
 
-	// =========================================================================
 	// NodePoolSegment
 	//
 	// Passed by the QuarantineQueue into its flush path so it can CAS
 	// Quarantine -> Dead directly on the node without any back-reference
 	// to AllocationRegistry as a class. The queue scans the contiguous
 	// pool for a matching m_BlockBase and transitions the state in place.
-	// =========================================================================
+
 	struct KERBECS_RUNTIME_API NodePoolSegment {
 		Internal::RegistryNode* m_Pool = nullptr;
 		size_t                  m_Capacity = 0;
 	};
 
-	// =========================================================================
 	// AllocationRegistry
 	//
 	// Striped concurrent hash map over a contiguous bump-allocated node pool.
@@ -68,12 +66,12 @@ namespace Kerbecs::Tracing {
 	//                                by per-node m_DtorLock.
 	//
 	// findRange fix:
-	//   Receives the block base pointer (always available on the Shadow as
+	//   Receives the block base pointer (always available on the ShadowPtr as
 	//   m_BlockBase). Hashes that to the correct bucket, then range-checks
 	//   m_UserPtr within that bucket's chain. This is correct because the
 	//   block base is what was inserted and hashed at insert time.
-	// =========================================================================
-	class AllocationRegistry {
+
+	class KERBECS_RUNTIME_API AllocationRegistry {
 	public:
 		AllocationRegistry() = default;
 		~AllocationRegistry() = default;
@@ -110,7 +108,8 @@ namespace Kerbecs::Tracing {
 		// Returns nullptr on any failure (violation already fired by caller).
 		Internal::RegistryNode* beginRetiring(
 			void* p_BlockBase,
-			uint32_t v_CallerThreadID) noexcept;
+			uint32_t v_CallerThreadID,
+			Shadow::Utils::ThreadPolicy v_Policy) noexcept;
 
 		// Complete the dtor cycle on p_BlockBase.
 		// Reads m_LiveCount with acquire.
@@ -136,7 +135,7 @@ namespace Kerbecs::Tracing {
 		const Internal::RegistryNode* find(const void* p_BlockBase) const noexcept;
 
 		// Lock-free range lookup. p_BlockBase must be the block base pointer
-		// (from Shadow::m_BlockBase), not an interior user pointer.
+		// (from ShadowPtr::m_BlockBase), not an interior user pointer.
 		// Hashes p_BlockBase to the correct bucket, then checks whether
 		// p_Address falls within [m_UserPtr, m_UserPtr + m_UserSize).
 		Internal::RegistryNode* findRange(const void* p_BlockBase, const void* p_Address) noexcept;
@@ -172,5 +171,4 @@ namespace Kerbecs::Tracing {
 		// same index twice. Returns nullptr if the pool is exhausted.
 		Internal::RegistryNode* _allocateNode() noexcept;
 	};
-
 }
