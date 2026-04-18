@@ -27,8 +27,7 @@ namespace Kerbecs {
 
     struct KERBECS_RUNTIME_API KerbecsShadowMap {
 
-        // Delegate to the zone free functions which implement the full             
-        // bit-level write path with lazy page commit.
+        /* Delegate to zone bit-level write path */
 
         void poison(void* p_Ptr, size_t v_Size) noexcept {
             MemoryZone::shadowPoison(p_Ptr, v_Size);
@@ -100,7 +99,6 @@ namespace Kerbecs {
             return poisoned;
         }
 
-        // ---- toShadow --------------------------------------------------
         void* toShadow(void* p_Ptr, size_t v_Size) noexcept {
             return MemoryZone::mapToShadow(p_Ptr, v_Size);
         }

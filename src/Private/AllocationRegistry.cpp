@@ -25,7 +25,7 @@
 #include "MemoryZone.h"
 
 namespace Kerbecs::Tracing {
-	// init / shutdown
+	/* Lifecycle */
 
 	bool AllocationRegistry::init() noexcept {
 		m_NodePool = static_cast<Internal::RegistryNode*>(
@@ -55,7 +55,7 @@ namespace Kerbecs::Tracing {
 		m_Count.store(0, std::memory_order_relaxed);
 	}
 
-	// _allocateNode
+	/* Internal allocation */
 
 	Internal::RegistryNode* AllocationRegistry::_allocateNode() noexcept {
 		size_t idx = m_NodeCursor.fetch_add(1, std::memory_order_relaxed);
@@ -68,7 +68,9 @@ namespace Kerbecs::Tracing {
 		return &m_NodePool[idx];
 	}
 
-	// insert
+	/*
+	 * Public interface: insertion
+	 */
 	//
 	// Acquires the bucket lock to prevent lost-update on concurrent prepends
 	// to the same bucket head. The duplicate check also runs under the lock
@@ -161,7 +163,9 @@ namespace Kerbecs::Tracing {
 		return true;
 	}
 
-	// beginRetiring
+	/*
+	 * Retirement orchestration
+	 */
 	//
 	// Attempts to begin the dtor cycle. Returns the node pointer on success
 	// so the caller (shadowDestroy) can decrement m_LiveCount and proceed.
@@ -180,7 +184,7 @@ namespace Kerbecs::Tracing {
 		if (!node)
 			return nullptr;
 
-		// Thread ownership check. IF the policy is Strict, we reject destructions
+		// Thread ownership check. If the policy is Strict, we reject destructions
 		// from threads other than the one that allocated the block.
 		if (v_Policy == Shadow::Utils::ThreadPolicy::Strict) {
 			if (v_CallerThreadID != node->m_ThreadID) {
@@ -209,7 +213,9 @@ namespace Kerbecs::Tracing {
 		return node;
 	}
 
-	// endRetiring
+	/*
+	 * Completion of retirement
+	 */
 	//
 	// Called after the dtor cycle completes (destructor called, tombstone
 	// stamped). Reads m_LiveCount with acquire to decide the next state:
@@ -279,7 +285,9 @@ namespace Kerbecs::Tracing {
 		KERBECS_UNUSED(p_Thunk);
 	}
 
-	// retire  (Quarantine -> Dead)
+	/*
+	 * Final transition to Dead
+	 */
 	//
 	// Called by the QuarantineQueue flush path via NodePoolSegment scan,
 	// or directly here. CAS Quarantine -> Dead.
@@ -305,7 +313,9 @@ namespace Kerbecs::Tracing {
 		return true;
 	}
 
-	// find  (lock-free)
+	/*
+	 * Lookups
+	 */
 
 	Internal::RegistryNode*
 		AllocationRegistry::find(const void* p_BlockBase) noexcept {
@@ -354,7 +364,9 @@ namespace Kerbecs::Tracing {
 		return nullptr;
 	}
 
-	// findRange  (lock-free)
+	/*
+	 * Range-based lookups
+	 */
 	//
 	// p_BlockBase is hashed to find the correct bucket (same hash as insert).
 	// p_Address is the interior address being range-checked against

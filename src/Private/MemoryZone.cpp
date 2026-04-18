@@ -23,7 +23,6 @@
 #include "KerbecsMemory.h"
 #include "MemoryZone.h"
 
-#include <iostream>
 
 #include "KerbecsDiagnostics.h"
 
@@ -146,11 +145,9 @@ namespace Kerbecs::MemoryZone {
         m_GlobalZone = base + shadowBytes;
         m_StaticZone = base + shadowBytes + globalBytes;
 
-        // ----------------------------------------------------------------
-        // Initialise the three lazy-commit bump allocators.
-        // No commit happens here - pages are committed on first touch by
-        // BumpAllocatorBase::allocate -> commitPageIfNeeded.
-        // ----------------------------------------------------------------
+        /*
+         * Lazy-commit allocations: pages are committed on first touch
+         */
 
         m_ShadowzoneAllocatorImpl.init(m_ShadowZone, shadowBytes);
         m_GlobalAllocatorImpl.init(m_GlobalZone, globalBytes);
@@ -161,9 +158,7 @@ namespace Kerbecs::MemoryZone {
         m_StaticAllocator = Shadow::Internal::MemorySupport<Allocators::StaticAllocator>{ &m_StaticAllocatorImpl };
         m_GlobalAllocator = Shadow::Internal::MemorySupport<Allocators::GlobalAllocator>{ &m_GlobalAllocatorImpl };
 
-        // ----------------------------------------------------------------
-        // Initialise registry (self-allocates node pool via Memory::allocate).
-        // ----------------------------------------------------------------
+        /* Registry initialization */
 
         if (!m_Registry.init())
             goto fail;
@@ -209,7 +204,7 @@ namespace Kerbecs::MemoryZone {
         const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_User);
         const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
 
-        // Security: Ensure the user address is within the managed memory zone
+        /* Bounds validation against shadow region */
         if (userStart < zoneBase)
             return nullptr;
 

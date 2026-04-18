@@ -21,7 +21,6 @@
 
 #pragma once
 #include "Kerbecs.h"
-#include <cstdint>
 
 namespace Kerbecs {
 	struct KERBECS_RUNTIME_API StackTrace {

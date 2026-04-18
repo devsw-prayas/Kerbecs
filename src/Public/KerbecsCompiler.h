@@ -66,7 +66,6 @@
 #define KERBECS_DEBUG_BREAK() __builtin_trap()
 #define KERBECS_TRAP()        __builtin_trap()
 #else
-#include <cstdlib>
 #define KERBECS_DEBUG_BREAK() std::abort()
 #define KERBECS_TRAP()        std::abort()
 #endif

@@ -19,7 +19,7 @@
 * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...
 */
 #pragma once
-#include <KerbecsCompiler.h>
+#include "KerbecsCompiler.h"
 
 #if defined(_DEBUG) || defined(DEBUG)
 #define KERBECS_BUILD_DEBUG 1

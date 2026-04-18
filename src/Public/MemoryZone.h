@@ -20,8 +20,6 @@
 */
 
 #pragma once
-#include <cstdint>
-#include <atomic>
 #include "Kerbecs.h"
 #include "KerbecsDiagnostics.h"
 #include "KerbecsStats.h"

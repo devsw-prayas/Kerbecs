@@ -36,7 +36,7 @@ Unlike compiler-instrumented sanitizers (ASan, Valgrind), Kerbecs is a pure libr
 - **Three block layouts** — `NormalLayout` (redzones + metadata), `EnhancedLayout` (redzones + canaries + checksummed metadata), `StaticLayout` (redzones + canaries, no in-block metadata)
 - **Quarantine queue** — freed blocks are held in a deferred ring buffer before physical release, enabling use-after-free detection across a configurable window
 - **Allocation registry** — lock-free hash map tracking every live block, with a full state machine: `Live → Retiring → Quarantine → Dead`
-- **Thread ownership enforcement** — destroy must be called from the allocating thread
+- **Thread ownership enforcement** — configurable per `ShadowPtr` via `ThreadPolicy`. `Strict` requires destroy to be called from the allocating thread; `Flexible` (default) allows cross-thread destruction under the dtor lock
 - **Leak detection** — scans the node pool at teardown and traps if any live allocations remain
 - **Policy-based design** — layout, shadow map, logger, hash accumulator, and allocator are all injected via C++20 concepts; bring your own or use the provided defaults
 - **Lazy page commit** — reserves a large VA range upfront; physical pages are committed only on first touch
@@ -105,8 +105,8 @@ All zone sizes and capacities are set at compile time via the definitions above.
 | `SHADOWZONE_SIZE` | `1500` | Shadow bitmap zone size in GiB |
 | `GLOBALZONE_SIZE` | `500` | Global allocator zone size in GiB |
 | `STATICZONE_SIZE` | `500` | Static allocator zone size in GiB |
-| `REGISTRY_CAPACITY` | `128` | Max tracked allocations in the registry node pool |
-| `QUARANTINE_CAPACITY` | `256` | Quarantine ring buffer slot count |
+| `REGISTRY_CAPACITY` | `128` | **Currently unused by `AllocationRegistry`.** The node pool capacity is hardcoded to `kNodeCapacity = 4,194,304` (2²²) in `AllocationRegistry.h` |
+| `QUARANTINE_CAPACITY` | `4096` | Quarantine ring buffer slot count. Must be a power of two |
 
 > **Note:** All zone sizes are virtual address reservations — no physical memory is committed upfront. The actual RAM cost is only what your allocations touch.
 
@@ -151,11 +151,10 @@ std::thread g_EpochThread([] {
         // Advance the epoch so queued blocks age out.
         zone.m_Epoch.fetch_add(1, std::memory_order_acq_rel);
 
-        // Flush all quarantine entries eligible at the new epoch.
-        const uint64_t epoch = zone.m_Epoch.load(std::memory_order_acquire);
+        // Flush all quarantine entries eligible at the current epoch.
+        // flushEligible reads the epoch internally - do not pass it as an argument.
         zone.m_Quarantine.flushEligible(
-            zone.m_Registry.poolSegment(),
-            epoch);
+            zone.m_Registry.poolSegment());
     }
 });
 ```
@@ -173,7 +172,7 @@ g_EpochThread.join();
 Kerbecs::MemoryZone::teardownShadowzone();
 ```
 
-`teardownShadowzone()` does a final unconditional drain of the quarantine (passing `SIZE_MAX` as the epoch, so all remaining entries are flushed regardless of age), then scans the registry node pool for any blocks still in `Live`, `Retiring`, or `Quarantine` state. Each one is counted as a leak violation. If any leaks are found it fires `KERBECS_TRAP()` before releasing the VA reservation.
+`teardownShadowzone()` does a final unconditional drain of the quarantine by calling `flushEligible` with `v_Force = true`, bypassing the epoch eligibility check so all remaining entries are flushed regardless of age. It then scans the registry node pool for any blocks still in `Live`, `Retiring`, or `Quarantine` state. Each one is counted as a leak violation. If any leaks are found it fires `KERBECS_TRAP()` before releasing the VA reservation.
 
 ---
 
@@ -181,10 +180,10 @@ Kerbecs::MemoryZone::teardownShadowzone();
 
 ### Allocating and constructing
 
-`ShadowPtr` is the core handle type. It is templated on five policy types:
+`ShadowPtr` is the core handle type. It is templated on six policy types:
 
 ```
-ShadowPtr<LayoutPolicy, ShadowMap, Logger, HashAccumulator, Allocator>
+ShadowPtr<LayoutPolicy, ShadowMap, Logger, HashAccumulator, Allocator, ThreadPolicy = Flexible>
 ```
 
 **The allocator is not provided by Kerbecs.** You supply your own type that satisfies `AllocatorConcept` — it allocates the raw block that `ShadowPtr` will manage. Kerbecs wraps it in a `MemorySupport` helper and uses it to both allocate the block and to dealloc it later via a type-erased thunk stored in the quarantine queue.
@@ -328,6 +327,25 @@ struct MyHasher {
 };
 ```
 
+**Thread ownership policy** — the sixth template parameter, `ThreadPolicy`, controls cross-thread destruction behaviour:
+
+```cpp
+// Flexible (default) — cross-thread destruction is allowed.
+// Kerbecs serialises it via a per-node dtor lock. Use this for
+// workloads where objects are routinely freed from a different
+// thread than the one that allocated them (e.g. task systems).
+using MyHandle = Kerbecs::Shadow::ShadowPtr<
+    Layout, Map, Logger, Hasher, Alloc,
+    Kerbecs::Shadow::Utils::ThreadPolicy::Flexible>;
+
+// Strict — shadowDestroy must be called from the allocating thread.
+// Any other thread fires ThreadOwnership. Use this for objects with
+// guaranteed single-thread lifetime where cross-thread frees indicate a bug.
+using MyStrictHandle = Kerbecs::Shadow::ShadowPtr<
+    Layout, Map, Logger, Hasher, Alloc,
+    Kerbecs::Shadow::Utils::ThreadPolicy::Strict>;
+```
+
 ---
 
 ## Architecture
@@ -394,6 +412,8 @@ Empty → Live → Retiring → Quarantine → Dead
 ### Quarantine queue
 
 A ring buffer of fixed-size slots (`QUARANTINE_CAPACITY`). Each slot stores the block base, size, epoch stamp, allocator pointer, and a type-erased dealloc thunk. A block enqueued at epoch N is only eligible for release when `N + 2 <= currentEpoch`.
+
+`flushEligible` takes an optional `v_Force` flag (default `false`). When `true`, the epoch eligibility check is skipped and all queued entries are retired unconditionally — used exclusively by `teardownShadowzone`.
 
 **Kerbecs never advances the epoch or calls `flushEligible` on its own.** Both are the consumer's responsibility, typically done on a dedicated background thread (see [Epoch thread](#epoch-thread-required)). `flushEligible` is protected by an internal spinlock so only one flush runs at a time.
 

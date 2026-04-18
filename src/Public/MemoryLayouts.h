@@ -26,30 +26,19 @@
 #include "ShadowUtils.h"
 #include "KerbecsEnforcements.h"
 
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
 
 #include "KerbecsDiagnostics.h"
 
 namespace Kerbecs::Layout {
 
-	// =========================================================================
-	// NormalLayout
-	//
-	// Block structure:
-	//
-	//  [ Leading redzone  | REDZONE_SIZE bytes                      ]
-	//  [ User payload     | payloadSize bytes, aligned to alignof(T)]
-	//  [ Trailing redzone | REDZONE_SIZE bytes                      ]
-	//  [ NormalMetaData   | sizeof(NormalMetaData), aligned         ]
-	//
-	// Offsets (4 fields):
-	//   m_RedzoneOffsetLeading   - always 0
-	//   m_UserDataOffset         - 0 REDZONE_SIZE, aligned up to alignof(T)
-	//   m_RedzoneOffsetTrailing  - userDataOffset + payloadSize
-	//   m_MetaDataOffset          after trailing redzone, aligned up to alignof(NormalMetaData)
-	// =========================================================================
+	/*
+	 * NormalLayout
+	 * 
+	 * [ Leading redzone  | REDZONE_SIZE bytes                      ]
+	 * [ User payload     | payloadSize bytes, aligned to alignof(T)]
+	 * [ Trailing redzone | REDZONE_SIZE bytes                      ]
+	 * [ NormalMetaData   | sizeof(NormalMetaData), aligned         ]
+	 */
 
 	struct KERBECS_RUNTIME_API NormalLayout {
 
@@ -111,28 +100,17 @@ namespace Kerbecs::Layout {
 	static_assert(Enforcement::LayoutPolicyConcept<NormalLayout>);
 
 
-	// =========================================================================
-	// EnhancedLayout
-	//
-	// Block structure:
-	//
-	//  [ Leading redzone          | REDZONE_SIZE bytes                           ]
-	//  [ Leading EnhancedMetaData | sizeof(EnhancedMetaData), aligned            ]
-	//  [ Leading canary           | CANARY_SIZE bytes                            ]
-	//  [ User payload             | payloadSize bytes, aligned to alignof(T)     ]
-	//  [ Trailing canary          | CANARY_SIZE bytes                            ]
-	//  [ Trailing EnhancedMetaData| sizeof(EnhancedMetaData), aligned            ]
-	//  [ Trailing redzone         | REDZONE_SIZE bytes                           ]
-	//
-	// Offsets (7 fields):
-	//   m_RedzoneOffsetLeading    - always 0
-	//   m_MetaDataOffsetLeading   - after leading redzone, aligned
-	//   m_CanaryOffsetLeading     - after leading metadata
-	//   m_UserDataOffset          - after leading canary, aligned to T
-	//   m_CanaryOffsetTrailing    - after payload
-	//   m_MetaDataOffsetTrailing  - after trailing canary, aligned
-	//   m_RedzoneOffsetTrailing   - after trailing metadata
-	// =========================================================================
+	/*
+	 * EnhancedLayout
+	 * 
+	 * [ Leading redzone          | REDZONE_SIZE bytes                           ]
+	 * [ Leading EnhancedMetaData | sizeof(EnhancedMetaData), aligned            ]
+	 * [ Leading canary           | CANARY_SIZE bytes                            ]
+	 * [ User payload             | payloadSize bytes, aligned to alignof(T)     ]
+	 * [ Trailing canary          | CANARY_SIZE bytes                            ]
+	 * [ Trailing EnhancedMetaData| sizeof(EnhancedMetaData), aligned            ]
+	 * [ Trailing redzone         | REDZONE_SIZE bytes                           ]
+	 */
 
 	struct KERBECS_RUNTIME_API EnhancedLayout {
 
@@ -243,28 +221,17 @@ namespace Kerbecs::Layout {
 	static_assert(Enforcement::LayoutPolicyConcept<EnhancedLayout>);
 
 
-	// =========================================================================
-	// StaticLayout
-	//
-	// Block structure:
-	//
-	//  [ Leading redzone  | REDZONE_SIZE bytes                      ]
-	//  [ Leading canary   | CANARY_SIZE bytes                       ]
-	//  [ User payload     | payloadSize bytes, aligned to alignof(T)]
-	//  [ Trailing canary  | CANARY_SIZE bytes                       ]
-	//  [ Trailing redzone | REDZONE_SIZE bytes                      ]
-	//
-	// There is no in-block metadata. The ShadowPtr<StaticLayout,...> handle itself
-	// IS the metadata - it lives in the static region and persists for the
-	// lifetime of the process.
-	//
-	// Offsets (5 fields):
-	//   m_RedzoneOffsetLeading   - always 0
-	//   m_CanaryOffsetLeading    - after leading redzone
-	//   m_UserDataOffset         - after leading canary, aligned to T
-	//   m_CanaryOffsetTrailing   - after payload
-	//   m_RedzoneOffsetTrailing  - after trailing canary
-	// =========================================================================
+	/*
+	 * StaticLayout
+	 * 
+	 * [ Leading redzone  | REDZONE_SIZE bytes                      ]
+	 * [ Leading canary   | CANARY_SIZE bytes                       ]
+	 * [ User payload     | payloadSize bytes, aligned to alignof(T)]
+	 * [ Trailing canary  | CANARY_SIZE bytes                       ]
+	 * [ Trailing redzone | REDZONE_SIZE bytes                      ]
+	 * 
+	 * No in-block metadata; handle persists in static region.
+	 */
 
 	struct KERBECS_RUNTIME_API StaticLayout {
 

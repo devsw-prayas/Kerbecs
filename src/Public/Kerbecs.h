@@ -41,12 +41,19 @@
 #define KERBECS_RUNTIME_API
 #endif
 
+/* Standard Library Headers */
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <atomic>		   
+#include <cstdlib>
+#include <atomic>
 #include <algorithm>
 #include <limits>
 #include <bit>
 #include <mutex>
+
+/* Compiler Intrinsics */
+#ifdef _WIN32
+#include <intrin.h>
+#endif

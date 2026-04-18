@@ -30,12 +30,13 @@
 #include "MemoryZone.h"
 #include "MemorySupport.h"
 
-#include <cstdint>
+// This is the core header for Kerbecs
+// Please do not touch or change anything, it was a pain in the ass to fix :(
 
 namespace Kerbecs::Shadow {
 	template<typename L, typename S, typename O, typename H, typename AC, Utils::ThreadPolicy TP = Utils::ThreadPolicy::Flexible>
 		requires Enforcement::LayoutPolicyConcept<L>
-		&& Enforcement::ShadowMapConcept<S>
+	&& Enforcement::ShadowMapConcept<S>
 		&& Enforcement::LoggerConcept<O>
 		&& Enforcement::HashAccumulatorConcept<H>
 		&& Enforcement::AllocatorConcept<AC>
@@ -51,17 +52,17 @@ namespace Kerbecs::Shadow {
 		public:
 			void* m_RawPtr = nullptr; // start of user payload
 			void* m_BlockBase = nullptr; // start of raw heap block
-			size_t                    m_TotalSize = 0;       // total heap block size
-			size_t					  m_UserSize = 0;		// total user size
+			size_t m_TotalSize = 0;       // total heap block size
+			size_t m_UserSize = 0;		// total user size
 			layout_::Offsets m_Offsets = {};      // layout-computed offsets
 			shadow_* m_Map = nullptr; // injected shadow bitmap
 			logger_* m_Logger = nullptr; // injected violation logger
 			hasher_* m_Hasher = nullptr; // injected hash accumulator
 			const char* m_Name = nullptr; // debug tag (string literal, not owned)
-			uint64_t                  m_AllocID = 0;       // allocator identity hash
-			uint32_t                  m_ThreadID = 0;       // allocating thread ID
-			StackTrace                m_AllocTrace = {};      // allocation call site
-			StackTrace                m_FreeTrace = {};      // free call site
+			uint64_t m_AllocID = 0;       // allocator identity hash
+			uint32_t m_ThreadID = 0;       // allocating thread ID
+			StackTrace m_AllocTrace = {};      // allocation call site
+			StackTrace  m_FreeTrace = {};      // free call site
 			// Non-owning pointer to the MemorySupport wrapper for this shadow's
 			// allocator. ShadowPtr fires a violation if this is null at destroy time.
 			Internal::MemorySupport<AC>* m_UserAllocator = nullptr;
@@ -183,7 +184,7 @@ namespace Kerbecs::Shadow {
 		void* block = p_Shadow->m_UserAllocator->allocate(blockSize, effectiveAlign);
 
 		if (!block) return false;
-		
+
 		p_Shadow->m_Offsets = {}; // Explicitly zero-initialize metadata offsets
 		p_Shadow->m_UserSize = payloadSize;
 
@@ -197,15 +198,14 @@ namespace Kerbecs::Shadow {
 
 	template<typename T, typename LP, typename SM, typename LG, typename HA, typename AC, Utils::ThreadPolicy TP>
 	KERBECS_MAYBE_UNUSED bool shadowInit(
-		ShadowPtr<LP, SM, LG, HA, AC, TP>* p_Shadow, 
-		void* p_Block, 
-		size_t v_BlockSize, 
+		ShadowPtr<LP, SM, LG, HA, AC, TP>* p_Shadow,
+		void* p_Block,
+		size_t v_BlockSize,
 		size_t v_Count = 1,
 		size_t v_Align = alignof(T)) noexcept {
 		if (!p_Shadow || !p_Block) return false;
 		if (v_Count > SIZE_MAX / sizeof(T)) return false;
 
-		// ---- Stamp allocating thread ID ----
 		p_Shadow->m_ThreadID = Tracing::Internal::currentThreadID();
 
 		const size_t payloadSize = v_Count * sizeof(T);
@@ -213,7 +213,6 @@ namespace Kerbecs::Shadow {
 		const size_t requiredSize = LP::blockSize(payloadSize, effectiveAlign);
 		if (v_BlockSize < requiredSize) return false;
 
-		// ---- Layout Placement (block-relative) ----
 		p_Shadow->m_Offsets = LP::place(p_Block, v_BlockSize, payloadSize, effectiveAlign);
 
 		p_Shadow->m_BlockBase = p_Block;
@@ -221,14 +220,12 @@ namespace Kerbecs::Shadow {
 		p_Shadow->m_UserSize = payloadSize;
 		p_Shadow->m_AllocID = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(p_Block));
 
-		// ---- Derive Payload Pointer ----
 		auto* payload = static_cast<std::byte*>(p_Block) + p_Shadow->m_Offsets.m_UserDataOffset;
 
-		// ---- Alignment Check (on payload, NOT block base) ----
 		if (reinterpret_cast<uintptr_t>(payload) % effectiveAlign != 0) {
 			_reportViolation(p_Shadow,
-				ViolationKind::AlignmentViolation,
-				payload);
+							 ViolationKind::AlignmentViolation,
+							 payload);
 			return false;
 		}
 
@@ -298,7 +295,6 @@ namespace Kerbecs::Shadow {
 
 				return false;
 			}
-
 		}
 		return true;
 	}
@@ -342,13 +338,11 @@ namespace Kerbecs::Shadow {
 		size_t v_Idx = 0) noexcept {
 		if (!p_Shadow || !p_Shadow->m_RawPtr) return false;
 
-		// ---- Allocator null check - ShadowPtr owns this violation ----
 		if (!p_Shadow->m_UserAllocator) {
 			_reportViolation(p_Shadow, ViolationKind::WildPointer, p_Shadow->m_BlockBase);
 			return false;
 		}
 
-		// ---- Thread ownership check (must be called from allocating thread if policy is Strict) ----
 		if (ShadowPtr<LP, SM, LG, HA, AC, TP>::policy_::value == Utils::ThreadPolicy::Strict) {
 			if (Tracing::Internal::currentThreadID() != p_Shadow->m_ThreadID) {
 				_reportViolation(p_Shadow, ViolationKind::ThreadOwnership, p_Shadow->m_BlockBase);
@@ -361,17 +355,17 @@ namespace Kerbecs::Shadow {
 
 		if (state == Utils::MemoryState::DESTROYED) {
 			_reportViolation(p_Shadow, ViolationKind::DoubleFree,
-				static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
+							 static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
 			return false;
 		}
 		if (state == Utils::MemoryState::UNINITIALIZED) {
 			_reportViolation(p_Shadow, ViolationKind::UseBeforeInit,
-				static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
+							 static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
 			return false;
 		}
 		if (state == Utils::MemoryState::CORRUPTED) {
 			_reportViolation(p_Shadow, ViolationKind::MetadataCorruption,
-				static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
+							 static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset);
 			return false;
 		}
 
@@ -406,11 +400,9 @@ namespace Kerbecs::Shadow {
 
 		auto& zone = MemoryZone::instance();
 
-		// ---- Derive type-erased allocator/thunk from m_UserAllocator ----
 		void* allocatorPtr = static_cast<void*>(p_Shadow->m_UserAllocator);
 		void (*thunk)(void*, void*, size_t) = &Internal::MemorySupport<AC>::thunk;
 
-		// ---- Begin retiring cycle - CAS Live -> Retiring, acquires dtor lock ----
 		Tracing::Internal::RegistryNode* node = nullptr;
 		if (zone.m_Initialized && p_Shadow->m_BlockBase) {
 			node = zone.m_Registry.beginRetiring(
@@ -430,7 +422,6 @@ namespace Kerbecs::Shadow {
 
 		shadowTombstone(p_Shadow, offset, sizeof(T));
 
-		// ---- Decrement live count for this destroyed object ----
 		if (node)
 			node->m_LiveCount.fetch_sub(1, std::memory_order_acq_rel);
 
@@ -456,7 +447,6 @@ namespace Kerbecs::Shadow {
 						node));
 				}
 			}
-
 		}
 
 		return true;
@@ -471,10 +461,8 @@ namespace Kerbecs::Shadow {
 		if (!p_Shadow || !p_Shadow->m_BlockBase)
 			return Utils::MemoryState::CORRUPTED;
 
-		// ---- Compute block-relative offset ----
 		const size_t offset = p_Shadow->m_Offsets.m_UserDataOffset + v_Index * sizeof(T);
 
-		// ---- Compute payload pointer for registry check ----
 		void* payloadAddr =
 			static_cast<std::byte*>(p_Shadow->m_BlockBase) + offset;
 
@@ -527,14 +515,12 @@ namespace Kerbecs::Shadow {
 			}
 		}
 
-		// ---- ShadowPtr state check (block-relative) ----
 		Utils::MemoryState state =
 			shadowStateOf(p_Shadow, offset, sizeof(T));
 
 		if (state != Utils::MemoryState::CONSTRUCTED)
 			return state;
 
-		// ---- Guard verification ----
 		if (!shadowVerifyGuards(p_Shadow)) {
 			if (v_ReportViolation) {
 				_reportViolation(
