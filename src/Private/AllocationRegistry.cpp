@@ -22,6 +22,7 @@
 #include "Kerbecs.h"
 #include "AllocationRegistry.h"
 #include "KerbecsDiagnostics.h"
+#include "MemoryZone.h"
 
 namespace Kerbecs::Tracing {
 	// init / shutdown
@@ -103,8 +104,13 @@ namespace Kerbecs::Tracing {
 
 			while (cur) {
 				if (cur->m_BlockBase == p_BlockBase) {
-					bucket.m_Lock.unlock();
-					return false; // already tracked - caller reports overlap
+					// Only fail if the node is NOT Dead. Dead nodes are skipped
+					// to allow virtual address reuse at the same base pointer.
+					if (cur->m_State.load(std::memory_order_acquire) !=
+						Internal::AllocationState::Dead) {
+						bucket.m_Lock.unlock();
+						return false; // already tracked - caller reports overlap
+					}
 				}
 				cur = cur->m_Next;
 			}
@@ -151,6 +157,7 @@ namespace Kerbecs::Tracing {
 		bucket.m_Lock.unlock();
 
 		m_Count.fetch_add(1, std::memory_order_relaxed);
+		Kerbecs::statsOnInit(&Kerbecs::MemoryZone::instance().m_Stats, v_BlockSize);
 		return true;
 	}
 
@@ -164,7 +171,8 @@ namespace Kerbecs::Tracing {
 
 	Internal::RegistryNode* AllocationRegistry::beginRetiring(
 		void* p_BlockBase,
-		uint32_t v_CallerThreadID) noexcept {
+		uint32_t v_CallerThreadID,
+		Shadow::Utils::ThreadPolicy v_Policy) noexcept {
 		if (!p_BlockBase)
 			return nullptr;
 
@@ -172,11 +180,13 @@ namespace Kerbecs::Tracing {
 		if (!node)
 			return nullptr;
 
-		// Thread ownership check. The block must be destroyed from the same
-		// thread that allocated it. Caller passes currentThreadID(); we
-		// compare against the node's stamped m_ThreadID.
-		if (v_CallerThreadID != node->m_ThreadID)
-			return nullptr; // caller fires ThreadOwnership violation
+		// Thread ownership check. IF the policy is Strict, we reject destructions
+		// from threads other than the one that allocated the block.
+		if (v_Policy == Shadow::Utils::ThreadPolicy::Strict) {
+			if (v_CallerThreadID != node->m_ThreadID) {
+				return nullptr; // Caller fires ThreadOwnership violation
+			}
+		}
 
 		// Non-blocking lock attempt. A false return means another thread is
 		// already in the dtor cycle for this block - that is a violation.

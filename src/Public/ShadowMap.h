@@ -22,7 +22,6 @@
 #include "Kerbecs.h"
 #include "MemoryZone.h"
 #include "KerbecsEnforcements.h"
-#include <iostream>
 
 namespace Kerbecs {
 
@@ -45,106 +44,57 @@ namespace Kerbecs {
 
             auto& zone = MemoryZone::instance();
             if (!zone.m_Initialized.load(std::memory_order_acquire) ||
-                !zone.m_ShadowZone)
+                !zone.m_ShadowZone || !zone.m_MemoryZone)
                 return 0;
 
-            const uintptr_t shadowBase =
-                reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
+            const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_Ptr);
+            const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
 
-            const uintptr_t userStart =
-                reinterpret_cast<uintptr_t>(p_Ptr);
-
-            const uintptr_t shadowZoneEnd =
-                reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
-
-            const uintptr_t shadowStart =
-                (userStart >> 3) + shadowBase;
-
-            const uintptr_t userEnd = userStart + v_Size - 1;
-            if (userEnd < userStart)
+            // If the address is outside the tracked memory zone, it's effectively untracked.
+            if (userStart < zoneBase)
                 return v_Size;
 
-            const uintptr_t shadowLast =
-                (userEnd >> 3) + shadowBase;
+            const uintptr_t relativeOffset = userStart - zoneBase;
+            const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
+            const uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
 
+            const uintptr_t shadowStart = (relativeOffset >> MemoryZone::SHADOW_SCALE) + shadowBase;
 
-            if (shadowStart < shadowBase || shadowStart >= shadowZoneEnd)
-                return v_Size;
-            if (shadowLast < shadowBase || shadowLast >= shadowZoneEnd)
-                return v_Size;
+            const uintptr_t relativeEnd = (userStart + v_Size - 1) - zoneBase;
+            const uintptr_t shadowLast = (relativeEnd >> MemoryZone::SHADOW_SCALE) + shadowBase;
+
+            // Bounds check inside the shadow zone
+            if (shadowStart < shadowBase || shadowStart >= shadowZoneEnd ||
+                shadowLast < shadowBase || shadowLast >= shadowZoneEnd)
+                return v_Size; // Assume poisoned if out of bounds
 
             size_t poisoned = 0;
             size_t remaining = v_Size;
             uintptr_t addr = userStart;
 
-            // ---- first partial shadow byte (addr not 8-byte aligned) ----
-            size_t bitOffset = addr & 0x7;
-            if (bitOffset != 0) {
-                size_t span = std::min<size_t>(remaining, 8 - bitOffset);
-                const uint8_t* shadowByte =
-                    reinterpret_cast<const uint8_t*>((addr >> 3) + shadowBase);
+            while (remaining > 0) {
+                const uintptr_t rel = addr - zoneBase;
+                const uintptr_t shadowByteAddr = (rel >> MemoryZone::SHADOW_SCALE) + shadowBase;
+                const uint8_t* shadowByte = reinterpret_cast<const uint8_t*>(shadowByteAddr);
 
                 if (Memory::queryPage(shadowByte) == Memory::PageState::Committed) {
-                    for (size_t i = 0; i < span; ++i)
-                        if ((*shadowByte >> (bitOffset + i)) & 1u)
-                            ++poisoned;
-                }
+                    size_t bitOffset = addr & 0x7;
+                    size_t span = std::min<size_t>(remaining, 8 - bitOffset);
 
-                addr += span;
-                remaining -= span;
-            }
-
-            // ---- full shadow bytes (8 user bytes each) ------------------
-            size_t fullBytes = remaining >> 3;
-            const uint8_t* shadowPtr =
-                reinterpret_cast<const uint8_t*>((addr >> 3) + shadowBase);
-
-
-            uintptr_t currentPageBase = 0;
-            bool currentPageCommitted = false;
-
-            for (size_t i = 0; i < fullBytes; ++i) {
-                const uintptr_t shadowAddr =
-                    reinterpret_cast<uintptr_t>(&shadowPtr[i]);
-                const uintptr_t pageBase =
-                    shadowAddr & ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
-
-                if (pageBase != currentPageBase) {
-                    currentPageBase = pageBase;
-                    currentPageCommitted =
-                        Memory::queryPage(reinterpret_cast<const void*>(pageBase)) ==
-                        Memory::PageState::Committed;
-
-                    if (!currentPageCommitted) {
-                        const size_t offsetIntoPage = shadowAddr - pageBase;
-                        const size_t bytesUntilNextPage =
-                            std::min<size_t>(fullBytes - i,
-                                Memory::PAGE_SIZE - offsetIntoPage);
-                        i += bytesUntilNextPage - 1;
-                        addr += bytesUntilNextPage * 8;
-                        remaining -= bytesUntilNextPage * 8;
-                        continue;
+                    if (bitOffset == 0 && span == 8) {
+                        poisoned += std::popcount(*shadowByte);
+                    } else {
+                        for (size_t i = 0; i < span; ++i) {
+                            if ((*shadowByte >> (bitOffset + i)) & 1u)
+                                ++poisoned;
+                        }
                     }
                 }
 
-                // popcount: count set bits = poisoned user bytes in this group.
-                poisoned += static_cast<size_t>(
-                    std::popcount(static_cast<uint8_t>(shadowPtr[i])));
-            }
-
-            addr += fullBytes * 8;
-            remaining -= fullBytes * 8;
-
-            // ---- trailing partial shadow byte ---------------------------
-            if (remaining > 0) {
-                const uint8_t* shadowByte =
-                    reinterpret_cast<const uint8_t*>((addr >> 3) + shadowBase);
-
-                if (Memory::queryPage(shadowByte) == Memory::PageState::Committed) {
-                    for (size_t i = 0; i < remaining; ++i)
-                        if ((*shadowByte >> i) & 1u)
-                            ++poisoned;
-                }
+                size_t bitOffset = addr & 0x7;
+                size_t span = std::min<size_t>(remaining, 8 - bitOffset);
+                addr += span;
+                remaining -= span;
             }
 
             return poisoned;

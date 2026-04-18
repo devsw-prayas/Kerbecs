@@ -22,6 +22,9 @@
 #include "Kerbecs.h"
 #include "KerbecsMemory.h"
 #include "MemoryZone.h"
+
+#include <iostream>
+
 #include "KerbecsDiagnostics.h"
 
 namespace Kerbecs::MemoryZone {
@@ -53,9 +56,14 @@ namespace Kerbecs::MemoryZone {
         if (zone.m_Shutdown.load(std::memory_order_acquire))
             return false;
 
+        // Ensure any nodes in the Retiring state have their dtors finished
+        // before we audit the registry.
+        zone.m_Epoch.fetch_add(4, std::memory_order_acq_rel);
+
         zone.m_Quarantine.flushEligible(
             zone.m_Registry.poolSegment(),
-            SIZE_MAX);
+            SIZE_MAX,
+            true);
 
         zone.m_Quarantine.shutdown();
 
@@ -76,6 +84,10 @@ namespace Kerbecs::MemoryZone {
                     }
                 }
             }
+            std::cout << "[KERBECS] SHUTDOWN REPORT\n";
+            std::cout << "  Total Violations:   " << stats().m_TotalViolations << "\n";
+            std::cout << "  Active Allocations: " << stats().m_ActiveAllocations << " (Leaks if > 0)\n";
+            std::cout << "  Peak Usage (Bytes): " << stats().m_PeakUsage << "\n";
 
             if (leakFound)
                 KERBECS_TRAP();
@@ -191,22 +203,24 @@ namespace Kerbecs::MemoryZone {
         auto& zone = instance();
 
         if (!zone.m_Initialized.load(std::memory_order_acquire) ||
-            !zone.m_ShadowZone)
+            !zone.m_ShadowZone || !zone.m_MemoryZone)
             return nullptr;
 
-        uintptr_t userStart = reinterpret_cast<uintptr_t>(p_User);
-        uintptr_t userEnd = userStart + v_Size - 1;
+        const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_User);
+        const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
 
-        uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
-        uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
+        // Security: Ensure the user address is within the managed memory zone
+        if (userStart < zoneBase)
+            return nullptr;
 
-        uintptr_t shadowStart = (userStart >> SHADOW_SCALE) + shadowBase;
-        uintptr_t shadowEnd = (userEnd >> SHADOW_SCALE) + shadowBase;
+        const uintptr_t relativeOffset = userStart - zoneBase;
+        const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
+        const uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
 
+        const uintptr_t shadowStart = (relativeOffset >> SHADOW_SCALE) + shadowBase;
+        
+        // Final bounds check inside the shadow zone
         if (shadowStart < shadowBase || shadowStart >= shadowZoneEnd)
-            return nullptr;
-
-        if (shadowEnd < shadowBase || shadowEnd >= shadowZoneEnd)
             return nullptr;
 
         return reinterpret_cast<void*>(shadowStart);
@@ -219,21 +233,20 @@ namespace Kerbecs::MemoryZone {
         auto& zone = instance();
 
         if (!zone.m_Initialized.load(std::memory_order_acquire) ||
-            !zone.m_ShadowZone)
+            !zone.m_ShadowZone || !zone.m_MemoryZone)
             return { nullptr, nullptr };
 
-        uintptr_t shadowAddr = reinterpret_cast<uintptr_t>(p_Shadow);
-        uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
-
-        uintptr_t shadowZoneEnd =
-            shadowBase +
-            static_cast<size_t>(SHADOWZONE_SIZE) * Memory::GIBI_BYTE;
+        const uintptr_t shadowAddr = reinterpret_cast<uintptr_t>(p_Shadow);
+        const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
+        const uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
 
         if (shadowAddr < shadowBase || shadowAddr >= shadowZoneEnd)
             return { nullptr, nullptr };
 
-        uintptr_t userBase = (shadowAddr - shadowBase) << SHADOW_SCALE;
-        uintptr_t userEnd = userBase + ((1ULL << SHADOW_SCALE) - 1);
+        const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
+        const uintptr_t relativeOffset = (shadowAddr - shadowBase) << SHADOW_SCALE;
+        const uintptr_t userBase = relativeOffset + zoneBase;
+        const uintptr_t userEnd = userBase + ((1ULL << SHADOW_SCALE) - 1);
 
         return {
             reinterpret_cast<void*>(userBase),
@@ -242,93 +255,67 @@ namespace Kerbecs::MemoryZone {
     }
 
     bool shadowPoison(void* p_UserPtr, size_t v_Size) noexcept {
-        if (!p_UserPtr || v_Size == 0)
-            return false;
+        if (!p_UserPtr || v_Size == 0) return false;
 
-        uint8_t* shadow =
-            static_cast<uint8_t*>(mapToShadow(p_UserPtr, v_Size));
+        auto& zone = instance();
+        const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_UserPtr);
+        const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
+        const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
 
-        if (!shadow)
-            return false;
+        uintptr_t addr = userStart;
+        size_t remaining = v_Size;
 
-        uintptr_t addr = reinterpret_cast<uintptr_t>(p_UserPtr);
-        size_t    remaining = v_Size;
+        while (remaining > 0) {
+            const uintptr_t rel = addr - zoneBase;
+            const uintptr_t shadowByteAddr = (rel >> SHADOW_SCALE) + shadowBase;
+            uint8_t* shadowByte = reinterpret_cast<uint8_t*>(shadowByteAddr);
 
-        size_t bitOffset = addr & 0x7;
-        size_t firstSpan = std::min<size_t>(remaining, 8 - bitOffset);
+            if (!Memory::commitPageIfNeeded(shadowByte)) return false;
 
-        if (!Memory::commitPageIfNeeded(shadow))
-            return false;
+            size_t bitOffset = addr & 0x7;
+            size_t span = std::min<size_t>(remaining, 8 - bitOffset);
 
-        for (size_t i = 0; i < firstSpan; ++i)
-            shadow[0] |= static_cast<uint8_t>(1u << (bitOffset + i));
-
-        remaining -= firstSpan;
-        KERBECS_UNUSED(addr += firstSpan);
-        shadow += (bitOffset + firstSpan) >> 3;
-
-        size_t fullBytes = remaining >> 3;
-
-        for (size_t i = 0; i < fullBytes; ++i) {
-            if ((reinterpret_cast<uintptr_t>(&shadow[i]) &
-                 (Memory::PAGE_SIZE - 1)) == 0) {
-                KERBECS_UNUSED(Memory::commitPageIfNeeded(&shadow[i]));
+            for (size_t i = 0; i < span; ++i) {
+                *shadowByte |= static_cast<uint8_t>(1u << (bitOffset + i));
             }
-            shadow[i] = 0xFF;
+
+            addr += span;
+            remaining -= span;
         }
-
-        size_t tail = remaining & 0x7;
-
-        if (tail > 0) {
-            if ((reinterpret_cast<uintptr_t>(&shadow[fullBytes]) &
-                 (Memory::PAGE_SIZE - 1)) == 0) {
-                KERBECS_UNUSED(Memory::commitPageIfNeeded(&shadow[fullBytes]));
-            }
-            for (size_t i = 0; i < tail; ++i)
-                shadow[fullBytes] |= static_cast<uint8_t>(1u << i);
-        }
-
         return true;
     }
 
     bool shadowUnpoison(void* p_UserPtr, size_t v_Size) noexcept {
-        if (!p_UserPtr || v_Size == 0)
-            return false;
+        if (!p_UserPtr || v_Size == 0) return false;
 
-        uint8_t* shadow =
-            static_cast<uint8_t*>(mapToShadow(p_UserPtr, v_Size));
+        auto& zone = instance();
+        const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_UserPtr);
+        const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
+        const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
 
-        if (!shadow)
-            return false;
+        uintptr_t addr = userStart;
+        size_t remaining = v_Size;
 
-        if (Memory::queryPage(shadow) != Memory::PageState::Committed)
-            return true;
+        while (remaining > 0) {
+            const uintptr_t rel = addr - zoneBase;
+            const uintptr_t shadowByteAddr = (rel >> SHADOW_SCALE) + shadowBase;
+            uint8_t* shadowByte = reinterpret_cast<uint8_t*>(shadowByteAddr);
 
-        uintptr_t addr = reinterpret_cast<uintptr_t>(p_UserPtr);
-        size_t    remaining = v_Size;
+            // If page isn't committed, it's already implicitly zeroed/unpoisoned
+            if (Memory::queryPage(shadowByte) == Memory::PageState::Committed) {
+                size_t bitOffset = addr & 0x7;
+                size_t span = std::min<size_t>(remaining, 8 - bitOffset);
 
-        size_t bitOffset = addr & 0x7;
-        size_t firstSpan = std::min<size_t>(remaining, 8 - bitOffset);
+                for (size_t i = 0; i < span; ++i) {
+                    *shadowByte &= ~static_cast<uint8_t>(1u << (bitOffset + i));
+                }
+            }
 
-        for (size_t i = 0; i < firstSpan; ++i)
-            shadow[0] &= ~static_cast<uint8_t>(1u << (bitOffset + i));
-
-        remaining -= firstSpan;
-        KERBECS_UNUSED(addr += firstSpan);
-        shadow += (bitOffset + firstSpan) >> 3;
-
-        size_t fullBytes = remaining >> 3;
-
-        for (size_t i = 0; i < fullBytes; ++i)
-            shadow[i] = 0x00;
-
-        size_t tail = remaining & 0x7;
-
-        if (tail > 0) {
-            for (size_t i = 0; i < tail; ++i)
-                shadow[fullBytes] &= ~static_cast<uint8_t>(1u << i);
+            size_t bitOffset = addr & 0x7;
+            size_t span = std::min<size_t>(remaining, 8 - bitOffset);
+            addr += span;
+            remaining -= span;
         }
-
         return true;
     }
 

@@ -77,16 +77,15 @@ namespace Kerbecs::Layout {
 			Offsets o{};
 			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
-
 			o.m_UserDataOffset = Memory::alignUp(MemoryZone::REDZONE_SIZE, v_Align);
+			std::memset(base, MemoryZone::REDZONE, o.m_UserDataOffset);
 
 			o.m_RedzoneOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
 			o.m_MetaDataOffset = Memory::alignUp(
 				o.m_RedzoneOffsetTrailing + MemoryZone::REDZONE_SIZE,
 				alignof(MemoryZone::NormalMetaData));
 
+			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, o.m_MetaDataOffset - o.m_RedzoneOffsetTrailing);
 			::new (base + o.m_MetaDataOffset) MemoryZone::NormalMetaData{};
 
 			return o;
@@ -177,29 +176,31 @@ namespace Kerbecs::Layout {
 			Offsets o{};
 			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
-
 			o.m_MetaDataOffsetLeading = Memory::alignUp(
 				MemoryZone::REDZONE_SIZE,
 				alignof(MemoryZone::EnhancedMetaData));
+			std::memset(base, MemoryZone::REDZONE, o.m_MetaDataOffsetLeading);
+
 			::new (base + o.m_MetaDataOffsetLeading) MemoryZone::EnhancedMetaData{};
 
 			o.m_CanaryOffsetLeading = o.m_MetaDataOffsetLeading + sizeof(MemoryZone::EnhancedMetaData);
-			_stampCanary(base + o.m_CanaryOffsetLeading, MemoryZone::CANARY_SIZE);
+
 			o.m_UserDataOffset = Memory::alignUp(
 				o.m_CanaryOffsetLeading + MemoryZone::CANARY_SIZE,
 				v_Align);
+			_stampCanary(base + o.m_CanaryOffsetLeading, o.m_UserDataOffset - o.m_CanaryOffsetLeading);
 
 			o.m_CanaryOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
-			_stampCanary(base + o.m_CanaryOffsetTrailing, MemoryZone::CANARY_SIZE);
 
 			o.m_MetaDataOffsetTrailing = Memory::alignUp(
 				o.m_CanaryOffsetTrailing + MemoryZone::CANARY_SIZE,
 				alignof(MemoryZone::EnhancedMetaData));
+			_stampCanary(base + o.m_CanaryOffsetTrailing, o.m_MetaDataOffsetTrailing - o.m_CanaryOffsetTrailing);
 			::new (base + o.m_MetaDataOffsetTrailing) MemoryZone::EnhancedMetaData{};
 
 			o.m_RedzoneOffsetTrailing = o.m_MetaDataOffsetTrailing + sizeof(MemoryZone::EnhancedMetaData);
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
+			const size_t totalSize = v_BlockSize;
+			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
 
 			return o;
 		}
@@ -294,20 +295,21 @@ namespace Kerbecs::Layout {
 			Offsets o{};
 			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			std::memset(base, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
-
 			o.m_CanaryOffsetLeading = MemoryZone::REDZONE_SIZE;
-			_stampCanary(base + o.m_CanaryOffsetLeading, MemoryZone::CANARY_SIZE);
+
+			std::memset(base, MemoryZone::REDZONE, o.m_CanaryOffsetLeading);
 
 			o.m_UserDataOffset = Memory::alignUp(
 				o.m_CanaryOffsetLeading + MemoryZone::CANARY_SIZE,
 				v_Align);
+			_stampCanary(base + o.m_CanaryOffsetLeading, o.m_UserDataOffset - o.m_CanaryOffsetLeading);
 
 			o.m_CanaryOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
-			_stampCanary(base + o.m_CanaryOffsetTrailing, MemoryZone::CANARY_SIZE);
 
 			o.m_RedzoneOffsetTrailing = o.m_CanaryOffsetTrailing + MemoryZone::CANARY_SIZE;
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, MemoryZone::REDZONE_SIZE);
+			_stampCanary(base + o.m_CanaryOffsetTrailing, o.m_RedzoneOffsetTrailing - o.m_CanaryOffsetTrailing);
+			const size_t totalSize = v_BlockSize;
+			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
 
 			return o;
 		}

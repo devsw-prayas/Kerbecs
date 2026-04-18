@@ -23,11 +23,12 @@
 #include "Kerbecs.h"
 #include "KerbecsMemory.h"
 #include "RegistryUtils.h"
+#include "ShadowUtils.h"
 #include "Violation.h"
 
 namespace Kerbecs::Tracing {
 	static constexpr size_t kBucketCount = 2048;    // 2^11
-	static constexpr size_t kNodeCapacity = 131072;  // 2^17
+	static constexpr size_t kNodeCapacity = 4194304; // 2^22
 
 	static_assert((kBucketCount& (kBucketCount - 1)) == 0);
 	static_assert((kNodeCapacity& (kNodeCapacity - 1)) == 0);
@@ -107,7 +108,8 @@ namespace Kerbecs::Tracing {
 		// Returns nullptr on any failure (violation already fired by caller).
 		Internal::RegistryNode* beginRetiring(
 			void* p_BlockBase,
-			uint32_t v_CallerThreadID) noexcept;
+			uint32_t v_CallerThreadID,
+			Shadow::Utils::ThreadPolicy v_Policy) noexcept;
 
 		// Complete the dtor cycle on p_BlockBase.
 		// Reads m_LiveCount with acquire.

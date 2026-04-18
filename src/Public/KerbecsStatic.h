@@ -28,12 +28,12 @@
 
 namespace Kerbecs {
 
-    template<typename T, typename SM, typename LG, typename HA, typename AC>
+    template<typename T, typename SM, typename LG, typename HA, typename AC, Shadow::Utils::ThreadPolicy TP = Shadow::Utils::ThreadPolicy::Flexible>
     struct KERBECS_RUNTIME_API KerbecsDestructor {
-        Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC>* m_Handle = nullptr;
+        Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* m_Handle = nullptr;
 
         explicit KerbecsDestructor(
-            Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC>* p_Handle) noexcept
+            Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* p_Handle) noexcept
             : m_Handle(p_Handle) {
         }
 
@@ -44,7 +44,7 @@ namespace Kerbecs {
 
         ~KerbecsDestructor() {
             if (!m_Handle || !m_Handle->m_RawPtr) return;
-            Shadow::shadowDestroy<T>(m_Handle);
+            Shadow::shadowDestroy<T, Layout::StaticLayout, SM, LG, HA, AC, TP>(m_Handle);
         }
     };
 
@@ -68,7 +68,7 @@ namespace Kerbecs {
 
 // Full Shadow handle type - all five params.
 #define KERBECS_SHADOW_HANDLE_TYPE(Type)            \
-    ::Kerbecs::Shadow::Shadow<                      \
+    ::Kerbecs::Shadow::ShadowPtr<                   \
         ::Kerbecs::Layout::StaticLayout,            \
         KERBECS_SHADOW_MAP_TYPE,                    \
         KERBECS_LOGGER_TYPE,                        \

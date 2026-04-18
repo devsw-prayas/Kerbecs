@@ -30,6 +30,7 @@ namespace Kerbecs {
 		std::atomic<size_t> m_TotalFreed = 0; // incremented on shadowDestroy()
 		std::atomic<size_t> m_PeakUsage = 0; // high watermark of active bytes
 		std::atomic<size_t> m_ActiveAllocations = 0; // current live allocation count
+		std::atomic<size_t> m_ActiveBytes = 0;       // current live bytes
 		std::atomic<size_t> m_TotalPoisonedBytes = 0; // net poisoned bytes across all shadows
 		std::atomic<size_t> m_TotalViolations = 0; // incremented on every reportViolation()
 		std::atomic<size_t> m_StaticAllocations = 0; // incremented on StaticRegion::allocate()
@@ -41,21 +42,23 @@ namespace Kerbecs {
 		KerbecsStats(KerbecsStats&&) = delete;
 		KerbecsStats& operator=(KerbecsStats&&) = delete;
 	};
-	
-	 KERBECS_FORCEINLINE void statsOnInit(KerbecsStats* p_Stats, size_t v_Bytes) {
+
+	KERBECS_FORCEINLINE void statsOnInit(KerbecsStats* p_Stats, size_t v_Bytes) {
 		if (!p_Stats) return;
 		p_Stats->m_TotalAllocated.fetch_add(v_Bytes, std::memory_order_relaxed);
-		size_t active = p_Stats->m_ActiveAllocations.fetch_add(1, std::memory_order_relaxed) + 1;
+		p_Stats->m_ActiveAllocations.fetch_add(1, std::memory_order_relaxed);
+		size_t activeBytes = p_Stats->m_ActiveBytes.fetch_add(v_Bytes, std::memory_order_relaxed) + v_Bytes;
 
 		size_t peak = p_Stats->m_PeakUsage.load(std::memory_order_relaxed);
-		while (active > peak &&
-			!p_Stats->m_PeakUsage.compare_exchange_weak(peak, active, std::memory_order_relaxed));
+		while (activeBytes > peak &&
+			!p_Stats->m_PeakUsage.compare_exchange_weak(peak, activeBytes, std::memory_order_relaxed));
 	}
 
-	KERBECS_FORCEINLINE void statsOnDestroy(KerbecsStats* p_Stats) {
+	KERBECS_FORCEINLINE void statsOnDestroy(KerbecsStats* p_Stats, size_t v_Bytes) {
 		if (!p_Stats) return;
-		p_Stats->m_TotalFreed.fetch_add(1, std::memory_order_relaxed);
+		p_Stats->m_TotalFreed.fetch_add(v_Bytes, std::memory_order_relaxed);
 		p_Stats->m_ActiveAllocations.fetch_sub(1, std::memory_order_relaxed);
+		p_Stats->m_ActiveBytes.fetch_sub(v_Bytes, std::memory_order_relaxed);
 	}
 
 	KERBECS_FORCEINLINE void statsOnPoison(KerbecsStats* p_Stats, size_t v_Bytes) {
