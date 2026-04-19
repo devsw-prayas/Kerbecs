@@ -27,8 +27,6 @@ namespace Kerbecs {
 
     struct KERBECS_RUNTIME_API KerbecsShadowMap {
 
-        /* Delegate to zone bit-level write path */
-
         void poison(void* p_Ptr, size_t v_Size) noexcept {
             MemoryZone::shadowPoison(p_Ptr, v_Size);
         }

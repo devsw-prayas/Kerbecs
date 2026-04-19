@@ -81,23 +81,16 @@ namespace Kerbecs::Quarantine {
 
 		QuarantineEntry& slot = m_Slots[idx];
 
-		// Check for saturation before writing. If the slot is still occupied
-		// the queue is full - fail fast, no graceful eviction.
 		void* existing = slot.m_BlockBase.load(std::memory_order_acquire);
 		if (existing != nullptr)
-			_onSaturation(); // never returns
+			_onSaturation();
 
-		// Write all non-atomic fields BEFORE the atomic store of m_BlockBase.
-		// Any thread that observes a non-null m_BlockBase with acquire will
-		// also see these fields due to the release/acquire pair.
 		slot.m_BlockSize = v_BlockSize;
 		slot.m_Epoch = v_Epoch;
 		slot.m_Allocator = p_Allocator;
 		slot.m_DeallocThunk = p_DeallocThunk;
 		slot.m_Node = p_Node;
 
-		// Publish the entry. Release semantics guarantee the fields above
-		// are visible to any subsequent acquire load of m_BlockBase.
 		slot.m_BlockBase.store(p_BlockBase, std::memory_order_release);
 
 		statsOnQuarantineEnqueue(m_Stats);
@@ -152,7 +145,6 @@ namespace Kerbecs::Quarantine {
 		void* base = v_Entry.m_BlockBase.load(std::memory_order_acquire);
 		KERBECS_ASSERT(base != nullptr);
 
-		// Prefer O(1) retirement via stored node pointer if available.
 		if (v_Entry.m_Node) {
 			Tracing::Internal::AllocationState expected =
 				Tracing::Internal::AllocationState::Quarantine;
@@ -185,16 +177,13 @@ namespace Kerbecs::Quarantine {
 			KERBECS_UNUSED(found);
 		}
 
-		// Type-erased deallocation. Thunk casts p_Allocator back to the
-		// concrete MemorySupport<A>* and calls deallocate.
 		if (v_Entry.m_DeallocThunk && v_Entry.m_Allocator)
 			v_Entry.m_DeallocThunk(v_Entry.m_Allocator, base, v_Entry.m_BlockSize);
 
 		statsOnDestroy(m_Stats, v_Entry.m_BlockSize);
 		statsOnQuarantineDequeue(m_Stats);
 
-		// Null the entry. m_BlockBase last with release so a concurrent
-		// enqueue that observes null knows the slot is fully cleared.
+		// m_BlockBase nulled last with release — concurrent enqueue seeing null knows slot is clear.
 		v_Entry.m_BlockSize = 0;
 		v_Entry.m_Epoch = 0;
 		v_Entry.m_Allocator = nullptr;

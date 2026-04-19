@@ -164,7 +164,6 @@ namespace Kerbecs::Memory {
 
 		case PageState::Reserved:
 		{
-			// Align down to page boundary, commit exactly one page
 			uintptr_t pageBase = reinterpret_cast<uintptr_t>(p_Address) & ~(PAGE_SIZE - 1);
 			return commit(reinterpret_cast<void*>(pageBase), PAGE_SIZE, 0);
 		}

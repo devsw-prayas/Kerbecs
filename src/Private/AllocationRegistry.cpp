@@ -25,8 +25,6 @@
 #include "MemoryZone.h"
 
 namespace Kerbecs::Tracing {
-	/* Lifecycle */
-
 	bool AllocationRegistry::init() noexcept {
 		m_NodePool = static_cast<Internal::RegistryNode*>(
 			Memory::allocate(kNodeCapacity * sizeof(Internal::RegistryNode)));
@@ -55,8 +53,6 @@ namespace Kerbecs::Tracing {
 		m_Count.store(0, std::memory_order_relaxed);
 	}
 
-	/* Internal allocation */
-
 	Internal::RegistryNode* AllocationRegistry::_allocateNode() noexcept {
 		size_t idx = m_NodeCursor.fetch_add(1, std::memory_order_relaxed);
 
@@ -67,18 +63,6 @@ namespace Kerbecs::Tracing {
 
 		return &m_NodePool[idx];
 	}
-
-	/*
-	 * Public interface: insertion
-	 */
-	//
-	// Acquires the bucket lock to prevent lost-update on concurrent prepends
-	// to the same bucket head. The duplicate check also runs under the lock
-	// so two racing inserts with the same block base cannot both succeed.
-	//
-	// The node is fully initialised before its state is set to Live and before
-	// it is published to the bucket head. m_State store uses release so that
-	// any acquire load of m_Head that reaches this node also sees all fields.
 
 	bool AllocationRegistry::insert(
 		void* p_BlockBase,
@@ -96,10 +80,8 @@ namespace Kerbecs::Tracing {
 		const size_t       bucketIdx = _index(p_BlockBase);
 		Internal::Bucket& bucket = m_Buckets[bucketIdx];
 
-		// Acquire bucket lock for the duration of the duplicate check + prepend.
 		bucket.m_Lock.lock();
 
-		// Duplicate check under the lock.
 		{
 			Internal::RegistryNode* cur =
 				bucket.m_Head.load(std::memory_order_relaxed);
@@ -124,7 +106,6 @@ namespace Kerbecs::Tracing {
 			return false;
 		}
 
-		// Populate all fields before publishing.
 		newNode->m_BlockBase = p_BlockBase;
 		newNode->m_UserPtr = p_UserPtr;
 		newNode->m_BlockSize = v_BlockSize;
@@ -137,15 +118,12 @@ namespace Kerbecs::Tracing {
 
 		std::memset(&newNode->m_FreeTrace, 0, sizeof(StackTrace));
 
-		// Publish state as Live with release so readers that acquire m_Head
-		// observe the fully initialised node.
 		newNode->m_State.store(
 			Internal::AllocationState::Live,
 			std::memory_order_release);
 
-		// CAS prepend under the bucket lock. Lock prevents concurrent inserts
-		// to this bucket from racing on m_Head; the CAS is still correct as
-		// the canonical publication primitive.
+		// Both a lock AND a CAS: lock prevents concurrent inserts to the same
+		// bucket racing on m_Head; CAS is the canonical publication primitive.
 		Internal::RegistryNode* head;
 		do {
 			head = bucket.m_Head.load(std::memory_order_relaxed);
@@ -163,16 +141,6 @@ namespace Kerbecs::Tracing {
 		return true;
 	}
 
-	/*
-	 * Retirement orchestration
-	 */
-	//
-	// Attempts to begin the dtor cycle. Returns the node pointer on success
-	// so the caller (shadowDestroy) can decrement m_LiveCount and proceed.
-	// Returns nullptr and fires the appropriate violation on any failure:
-	//   - tryLock fails  -> ThreadOwnership (concurrent dtor attempt)
-	//   - state != Live  -> appropriate violation (DoubleFree, UseAfterFree...)
-
 	Internal::RegistryNode* AllocationRegistry::beginRetiring(
 		void* p_BlockBase,
 		uint32_t v_CallerThreadID,
@@ -184,49 +152,28 @@ namespace Kerbecs::Tracing {
 		if (!node)
 			return nullptr;
 
-		// Thread ownership check. If the policy is Strict, we reject destructions
-		// from threads other than the one that allocated the block.
 		if (v_Policy == Shadow::Utils::ThreadPolicy::Strict) {
 			if (v_CallerThreadID != node->m_ThreadID) {
 				return nullptr; // Caller fires ThreadOwnership violation
 			}
 		}
 
-		// Non-blocking lock attempt. A false return means another thread is
-		// already in the dtor cycle for this block - that is a violation.
+		// tryLock failure = concurrent dtor on the same block, caller fires violation.
 		if (!node->m_DtorLock.tryLock())
-			return nullptr; // caller fires ThreadOwnership violation
+			return nullptr;
 
-		// Verify state is Live under the dtor lock. Any other state is a
-		// violation the caller must handle after we release the lock.
 		Internal::AllocationState expected = Internal::AllocationState::Live;
 		if (!node->m_State.compare_exchange_strong(
 			expected,
 			Internal::AllocationState::Retiring,
 			std::memory_order_acq_rel,
 			std::memory_order_acquire)) {
-			// State was not Live - unlock and let caller fire the violation.
 			node->m_DtorLock.unlock();
 			return nullptr;
 		}
 
 		return node;
 	}
-
-	/*
-	 * Completion of retirement
-	 */
-	//
-	// Called after the dtor cycle completes (destructor called, tombstone
-	// stamped). Reads m_LiveCount with acquire to decide the next state:
-	//
-	//   m_LiveCount > 0  -> Retiring -> Live   (block has surviving objects)
-	//   m_LiveCount == 0 -> Retiring -> Quarantine (block is fully dead,
-	//                       enqueue into quarantine with thunk for dealloc)
-	//
-	// The dtor lock is released after the transition regardless of path.
-	// The quarantine enqueue happens before lock release so that the block
-	// cannot be accessed again before it is safely in the queue.
 
 	void AllocationRegistry::endRetiring(
 		void* p_BlockBase,
@@ -244,7 +191,6 @@ namespace Kerbecs::Tracing {
 			node->m_LiveCount.load(std::memory_order_acquire);
 
 		if (liveCount > 0) {
-			// Objects remain - transition back to Live.
 			Internal::AllocationState expected = Internal::AllocationState::Retiring;
 			KERBECS_UNUSED(node->m_State.compare_exchange_strong(
 				expected,
@@ -256,7 +202,6 @@ namespace Kerbecs::Tracing {
 			return;
 		}
 
-		// No objects remain - transition to Quarantine.
 		Internal::AllocationState expected = Internal::AllocationState::Retiring;
 		if (!node->m_State.compare_exchange_strong(
 			expected,
@@ -267,30 +212,12 @@ namespace Kerbecs::Tracing {
 			return;
 		}
 
-		// Store free-site trace.
 		std::memset(&node->m_FreeTrace, 0, sizeof(StackTrace));
-
-		// Quarantine enqueue is done by the caller (shadowDestroy) which has
-		// access to the zone's quarantine instance. We release the dtor lock
-		// here so the caller can safely enqueue before returning.
 		node->m_DtorLock.unlock();
 
-		// Decrement live count at the zone level.
 		m_Count.fetch_sub(1, std::memory_order_relaxed);
-
-		// Caller is responsible for enqueuing to the quarantine with
-		// (p_BlockBase, node->m_BlockSize, v_Epoch, p_Allocator, p_Thunk).
-		KERBECS_UNUSED(v_Epoch);
-		KERBECS_UNUSED(p_Allocator);
-		KERBECS_UNUSED(p_Thunk);
+		MemoryZone::quarantine().enqueue(p_BlockBase, node->m_BlockSize, v_Epoch, p_Allocator, p_Thunk, node);
 	}
-
-	/*
-	 * Final transition to Dead
-	 */
-	//
-	// Called by the QuarantineQueue flush path via NodePoolSegment scan,
-	// or directly here. CAS Quarantine -> Dead.
 
 	bool AllocationRegistry::retire(void* p_BlockBase) noexcept {
 		if (!p_BlockBase)
@@ -313,10 +240,6 @@ namespace Kerbecs::Tracing {
 		return true;
 	}
 
-	/*
-	 * Lookups
-	 */
-
 	Internal::RegistryNode*
 		AllocationRegistry::find(const void* p_BlockBase) noexcept {
 		if (!p_BlockBase)
@@ -328,7 +251,6 @@ namespace Kerbecs::Tracing {
 			m_Buckets[idx].m_Head.load(std::memory_order_acquire);
 
 		while (node) {
-			// Skip Dead and Empty nodes.
 			const auto state = node->m_State.load(std::memory_order_acquire);
 			if (state != Internal::AllocationState::Dead &&
 				state != Internal::AllocationState::Empty &&
@@ -363,14 +285,6 @@ namespace Kerbecs::Tracing {
 
 		return nullptr;
 	}
-
-	/*
-	 * Range-based lookups
-	 */
-	//
-	// p_BlockBase is hashed to find the correct bucket (same hash as insert).
-	// p_Address is the interior address being range-checked against
-	// [m_UserPtr, m_UserPtr + m_UserSize) within that bucket.
 
 	Internal::RegistryNode* AllocationRegistry::findRange(const void* p_BlockBase, const void* p_Address) noexcept {
 		if (!p_BlockBase || !p_Address) return nullptr;

@@ -145,10 +145,6 @@ namespace Kerbecs::MemoryZone {
         m_GlobalZone = base + shadowBytes;
         m_StaticZone = base + shadowBytes + globalBytes;
 
-        /*
-         * Lazy-commit allocations: pages are committed on first touch
-         */
-
         m_ShadowzoneAllocatorImpl.init(m_ShadowZone, shadowBytes);
         m_GlobalAllocatorImpl.init(m_GlobalZone, globalBytes);
         m_StaticAllocatorImpl.init(m_StaticZone, staticBytes);
@@ -158,37 +154,22 @@ namespace Kerbecs::MemoryZone {
         m_StaticAllocator = Shadow::Internal::MemorySupport<Allocators::StaticAllocator>{ &m_StaticAllocatorImpl };
         m_GlobalAllocator = Shadow::Internal::MemorySupport<Allocators::GlobalAllocator>{ &m_GlobalAllocatorImpl };
 
-        /* Registry initialization */
+        if (!m_Registry.init() || !m_Quarantine.init(QUARANTINE_CAPACITY, &m_Stats)) {
+            m_Registry.shutdown();
+            m_Quarantine.shutdown();
+            KERBECS_UNUSED(Memory::release(m_MemoryZone, totalBytes));
+            m_MemoryZone = nullptr;
+            m_ShadowZone = nullptr;
+            m_GlobalZone = nullptr;
+            m_StaticZone = nullptr;
+            m_Shutdown.store(false, std::memory_order_relaxed);
+            m_Initialized.store(false, std::memory_order_release);
+            return false;
+        }
 
-        if (!m_Registry.init())
-            goto fail;
-
-        if (!m_Quarantine.init(QUARANTINE_CAPACITY, &m_Stats))
-            goto fail;
-
-        // Publish fully initialised state.
         m_Shutdown.store(false, std::memory_order_relaxed);
         m_Initialized.store(true, std::memory_order_release);
-
         return true;
-
-    fail:
-        // Best-effort cleanup. Registry and quarantine clean up their own
-        // allocations in their respective shutdown paths.
-        m_Registry.shutdown();
-        m_Quarantine.shutdown();
-
-        KERBECS_UNUSED(Memory::release(m_MemoryZone, totalBytes));
-
-        m_MemoryZone = nullptr;
-        m_ShadowZone = nullptr;
-        m_GlobalZone = nullptr;
-        m_StaticZone = nullptr;
-
-        m_Shutdown.store(false, std::memory_order_relaxed);
-        m_Initialized.store(false, std::memory_order_release);
-
-        return false;
     }
 
     void* mapToShadow(void* p_User, size_t v_Size) noexcept {
@@ -204,7 +185,6 @@ namespace Kerbecs::MemoryZone {
         const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_User);
         const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
 
-        /* Bounds validation against shadow region */
         if (userStart < zoneBase)
             return nullptr;
 
@@ -213,8 +193,7 @@ namespace Kerbecs::MemoryZone {
         const uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
 
         const uintptr_t shadowStart = (relativeOffset >> SHADOW_SCALE) + shadowBase;
-        
-        // Final bounds check inside the shadow zone
+
         if (shadowStart < shadowBase || shadowStart >= shadowZoneEnd)
             return nullptr;
 
@@ -296,18 +275,15 @@ namespace Kerbecs::MemoryZone {
             const uintptr_t shadowByteAddr = (rel >> SHADOW_SCALE) + shadowBase;
             uint8_t* shadowByte = reinterpret_cast<uint8_t*>(shadowByteAddr);
 
-            // If page isn't committed, it's already implicitly zeroed/unpoisoned
-            if (Memory::queryPage(shadowByte) == Memory::PageState::Committed) {
-                size_t bitOffset = addr & 0x7;
-                size_t span = std::min<size_t>(remaining, 8 - bitOffset);
+            const size_t bitOffset = addr & 0x7;
+            const size_t span = std::min<size_t>(remaining, 8 - bitOffset);
 
-                for (size_t i = 0; i < span; ++i) {
+            // Uncommitted pages are implicitly zeroed/unpoisoned.
+            if (Memory::queryPage(shadowByte) == Memory::PageState::Committed) {
+                for (size_t i = 0; i < span; ++i)
                     *shadowByte &= ~static_cast<uint8_t>(1u << (bitOffset + i));
-                }
             }
 
-            size_t bitOffset = addr & 0x7;
-            size_t span = std::min<size_t>(remaining, 8 - bitOffset);
             addr += span;
             remaining -= span;
         }

@@ -26,20 +26,6 @@
 #include "KerbecsEnforcements.h"
 
 namespace Kerbecs::Allocators {
-
-	// BumpAllocatorBase
-	//
-	// Shared logic for all three zone bump allocators. Thread-safe via
-	// compare_exchange_weak on m_Bump. Alignment is always a power of two.
-	//
-	// All three zones are reserved but not committed at init. Each allocate
-	// call advances the bump cursor and calls commitPageIfNeeded on the
-	// first byte of every new page crossed. This is safe to race on:
-	// committing an already-committed page is idempotent on both Windows
-	// (VirtualAlloc MEM_COMMIT) and Linux (mprotect PROT_READ|PROT_WRITE).
-	//
-	// deallocate is a no-op. The zone is reclaimed as a whole at teardown
-	// via Memory::release on the full reserved VA range.
 	struct KERBECS_RUNTIME_API BumpAllocatorBase {
 		uint8_t* m_Base = nullptr;
 		size_t              m_Size = 0;
@@ -78,39 +64,26 @@ namespace Kerbecs::Allocators {
 					next,
 					std::memory_order_release,
 					std::memory_order_relaxed)) {
-
 					uint8_t* ptr = m_Base + aligned;
 
-					// Lazy commit: touch every page boundary this allocation
-					// crosses. commitPageIfNeeded is idempotent - races are safe.
+					// commitPageIfNeeded is idempotent on both platforms — racing commits are safe.
 					uintptr_t firstPage = reinterpret_cast<uintptr_t>(ptr)
 						& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
 					uintptr_t lastPage = reinterpret_cast<uintptr_t>(ptr + v_Bytes - 1)
 						& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
 
-					for (uintptr_t page = firstPage;
-						 page <= lastPage;
-						 page += Memory::PAGE_SIZE) {
-						KERBECS_UNUSED(
-							Memory::commitPageIfNeeded(reinterpret_cast<void*>(page)));
-					}
+					for (uintptr_t page = firstPage; page <= lastPage; page += Memory::PAGE_SIZE)
+						KERBECS_UNUSED(Memory::commitPageIfNeeded(reinterpret_cast<void*>(page)));
 
 					return ptr;
 				}
 			}
 		}
 
-		// No-op. Zone memory is reclaimed at teardown as a whole.
 		void deallocate(void* /*p_Block*/, size_t /*v_Bytes*/) noexcept {}
 	};
 
-	// ShadowzoneAllocator
-	//
-	// Bumps inside m_ShadowZone. Used internally by the shadow bitmap layer.
-	// Lazy commit throughout - pages are committed on first touch.
-	// Wrapped in MemorySupport as KerbecsMemoryZone::m_ShadowzoneAllocator.
 	struct KERBECS_RUNTIME_API ShadowzoneAllocator final : BumpAllocatorBase {
-
 		KERBECS_NODISCARD_MSG("Cannot discard allocated shadow block pointer")
 			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
 			return BumpAllocatorBase::allocate(v_Bytes, v_Align);
@@ -121,14 +94,7 @@ namespace Kerbecs::Allocators {
 		}
 	};
 
-	// StaticAllocator
-	//
-	// Bumps inside m_StaticZone. Backing allocator for KERBECS_PERSISTENT
-	// macro allocations. Lazy commit - pages committed on first touch.
-	// Wrapped in MemorySupport as KerbecsMemoryZone::m_StaticAllocator.
-	// Replaces StaticRegion entirely.
 	struct KERBECS_RUNTIME_API StaticAllocator final : BumpAllocatorBase {
-
 		KERBECS_NODISCARD_MSG("Cannot discard allocated static block pointer")
 			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
 			return BumpAllocatorBase::allocate(v_Bytes, v_Align);
@@ -139,13 +105,7 @@ namespace Kerbecs::Allocators {
 		}
 	};
 
-	// GlobalAllocator
-	//
-	// Bumps inside m_GlobalZone. Backing allocator for KERBECS_GLOBAL macro
-	// allocations. Lazy commit - pages committed on first touch.
-	// Wrapped in MemorySupport as KerbecsMemoryZone::m_GlobalAllocator.
 	struct KERBECS_RUNTIME_API GlobalAllocator final : BumpAllocatorBase {
-
 		KERBECS_NODISCARD_MSG("Cannot discard allocated global block pointer")
 			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
 			return BumpAllocatorBase::allocate(v_Bytes, v_Align);
@@ -156,7 +116,7 @@ namespace Kerbecs::Allocators {
 		}
 	};
 
-	static_assert(Enforcement::AllocatorConcept<ShadowzoneAllocator>);
-	static_assert(Enforcement::AllocatorConcept<StaticAllocator>);
-	static_assert(Enforcement::AllocatorConcept<GlobalAllocator>);
+	KERBECS_STATIC_ASSERT(Enforcement::AllocatorConcept<ShadowzoneAllocator>, "Concept not satisfied");
+	KERBECS_STATIC_ASSERT(Enforcement::AllocatorConcept<StaticAllocator>, "Concept not satisfied");
+	KERBECS_STATIC_ASSERT(Enforcement::AllocatorConcept<GlobalAllocator>, "Concept not satisfied");
 }
