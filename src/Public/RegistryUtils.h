@@ -23,16 +23,12 @@
 #include "Violation.h"
 
 namespace Kerbecs::Tracing::Internal {
-
-
 	inline thread_local const uint8_t t_ThreadAnchor = 0;
 
 	KERBECS_FORCEINLINE uint32_t currentThreadID() noexcept {
 		const uintptr_t addr = reinterpret_cast<uintptr_t>(&t_ThreadAnchor);
 		return static_cast<uint32_t>((addr * 0x9e3779b97f4a7c15ULL) >> 32);
 	}
-
-
 
 	// AllocationState
 	//
@@ -101,5 +97,4 @@ namespace Kerbecs::Tracing::Internal {
 		std::atomic<RegistryNode*> m_Head{ nullptr };
 		SpinLock                   m_Lock;
 	};
-
 }

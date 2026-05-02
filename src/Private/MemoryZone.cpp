@@ -83,10 +83,6 @@ namespace Kerbecs::MemoryZone {
                     }
                 }
             }
-            std::cout << "[KERBECS] SHUTDOWN REPORT\n";
-            std::cout << "  Total Violations:   " << stats().m_TotalViolations << "\n";
-            std::cout << "  Active Allocations: " << stats().m_ActiveAllocations << " (Leaks if > 0)\n";
-            std::cout << "  Peak Usage (Bytes): " << stats().m_PeakUsage << "\n";
 
             if (leakFound)
                 KERBECS_TRAP();

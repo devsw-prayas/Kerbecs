@@ -28,7 +28,7 @@
 #include "ShadowUtils.h"
 #include "Violation.h"
 #include "MemoryZone.h"
-#include "MemorySupport.h"													
+#include "MemorySupport.h"
 
 // This is the core header for Kerbecs
 // Please do not touch or change anything, it was a pain in the ass to fix :(
@@ -40,9 +40,8 @@ namespace Kerbecs::Shadow {
 		&& Enforcement::LoggerConcept<O>
 		&& Enforcement::HashAccumulatorConcept<H>
 		&& Enforcement::AllocatorConcept<AC>
-		struct KERBECS_RUNTIME_API ShadowPtr {
-		public:
-			using policy_ = std::integral_constant<Utils::ThreadPolicy, TP>;
+		struct ShadowPtr {
+		using policy_ = std::integral_constant<Utils::ThreadPolicy, TP>;
 		private:
 			using layout_ = L;
 			using shadow_ = S;
