@@ -23,17 +23,16 @@
 #include "Kerbecs.h"
 #include "MemoryLayouts.h"
 #include "ShadowPtr.h"
-#include "ShadowMap.h"
 #include "MemoryZone.h"
 
 namespace Kerbecs {
 
-    template<typename T, typename SM, typename LG, typename HA, typename AC, Shadow::Utils::ThreadPolicy TP = Shadow::Utils::ThreadPolicy::Flexible>
+    template<typename T, typename LG, typename HA, typename AC, Shadow::Utils::ThreadPolicy TP = Shadow::Utils::ThreadPolicy::Flexible>
     struct KERBECS_RUNTIME_API KerbecsDestructor {
-        Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* m_Handle = nullptr;
+        Shadow::ShadowPtr<Layout::StaticLayout, LG, HA, AC, TP>* m_Handle = nullptr;
 
         explicit KerbecsDestructor(
-            Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* p_Handle) noexcept
+            Shadow::ShadowPtr<Layout::StaticLayout, LG, HA, AC, TP>* p_Handle) noexcept
             : m_Handle(p_Handle) {
         }
 
@@ -44,15 +43,11 @@ namespace Kerbecs {
 
         ~KerbecsDestructor() {
             if (!m_Handle || !m_Handle->m_RawPtr) return;
-            Shadow::shadowDestroy<T, Layout::StaticLayout, SM, LG, HA, AC, TP>(m_Handle);
+            Shadow::shadowDestroy<T, Layout::StaticLayout, LG, HA, AC, TP>(m_Handle);
         }
     };
 
 }
-
-#ifndef KERBECS_SHADOW_MAP_TYPE
-#error "KERBECS_SHADOW_MAP_TYPE must be defined before including KerbecsStatic.h"
-#endif
 
 #ifndef KERBECS_LOGGER_TYPE
 #error "KERBECS_LOGGER_TYPE must be defined before including KerbecsStatic.h"
@@ -66,11 +61,10 @@ namespace Kerbecs {
 #error "KERBECS_ALLOCATOR_TYPE must be defined before including KerbecsStatic.h"
 #endif
 
-// Full Shadow handle type - all five params.
+// Full Shadow handle type - four params (shadow map removed).
 #define KERBECS_SHADOW_HANDLE_TYPE(Type)            \
     ::Kerbecs::Shadow::ShadowPtr<                   \
         ::Kerbecs::Layout::StaticLayout,            \
-        KERBECS_SHADOW_MAP_TYPE,                    \
         KERBECS_LOGGER_TYPE,                        \
         KERBECS_HASH_TYPE,                          \
         KERBECS_ALLOCATOR_TYPE>                     \
@@ -92,7 +86,6 @@ namespace Kerbecs {
                 ::Kerbecs::MemoryZone::instance()                                    \
                     .allocMember.allocate(blockSz, alignof(Type));                   \
             KERBECS_ASSERT(block && "Zone exhausted");                               \
-			name.m_Map = KerbecsShadowMap{};                    \
             name.m_Logger        = nullptr;                                          \
             name.m_Name          = tag;                                              \
             name.m_UserAllocator =                                                   \
@@ -107,7 +100,6 @@ namespace Kerbecs {
     static _KerbecsInit_##counter _kerbecsInitInst_##counter;                       \
     static ::Kerbecs::KerbecsDestructor<                                             \
         Type,                                                                        \
-        KERBECS_SHADOW_MAP_TYPE,                                                     \
         KERBECS_LOGGER_TYPE,                                                         \
         KERBECS_HASH_TYPE,                                                           \
         KERBECS_ALLOCATOR_TYPE> _kerbecsDestructor_##counter(&name)

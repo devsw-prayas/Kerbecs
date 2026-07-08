@@ -27,16 +27,6 @@
 namespace Kerbecs::Enforcement {
 
 	template<typename T>
-	concept ShadowMapConcept = requires(T m, void* p, size_t n) {
-		{ m.poison(p, n) }        -> std::same_as<void>;
-		{ m.unpoison(p, n) }      -> std::same_as<void>;
-		{ m.countPoisoned(p, n) } -> std::same_as<size_t>;
-		{ m.toShadow(p, n) }      -> std::same_as<void*>;
-	};
-
-
-
-	template<typename T>
 	concept LoggerConcept = requires(T logger, const Violation & v) {
 		{ logger.report(v) } -> std::same_as<void>;
 	};
