@@ -85,6 +85,15 @@ namespace Kerbecs::Tracing {
 
 		bucket.m_Lock.lock();
 
+		// Highest generation seen among ANY node (live or Dead) sharing this
+		// base - carried forward +1 so a stale ShadowedMemory<T> handle from
+		// a prior occupant of this address can never match the new node's
+		// generation (v0.2 SS3.5). _allocateNode() always bump-allocates a
+		// fresh node rather than reusing a Dead one in place, so this can't
+		// simply start each new node at 0 - two different node objects at
+		// the same recycled address would otherwise both start at 0 too.
+		uint64_t nextGeneration = 1;
+
 		{
 			Internal::RegistryNode* cur =
 				bucket.m_Head.load(std::memory_order_relaxed);
@@ -98,6 +107,10 @@ namespace Kerbecs::Tracing {
 						bucket.m_Lock.unlock();
 						return false; // already tracked - caller reports overlap
 					}
+
+					const uint64_t priorGen = cur->m_Generation.load(std::memory_order_relaxed);
+					if (priorGen + 1 > nextGeneration)
+						nextGeneration = priorGen + 1;
 				}
 				cur = cur->m_Next;
 			}
@@ -109,6 +122,7 @@ namespace Kerbecs::Tracing {
 			return false;
 		}
 
+		newNode->m_Generation.store(nextGeneration, std::memory_order_relaxed);
 		newNode->m_BlockBase = p_BlockBase;
 		newNode->m_UserPtr = p_UserPtr;
 		newNode->m_BlockSize = v_BlockSize;

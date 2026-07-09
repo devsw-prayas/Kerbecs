@@ -91,6 +91,14 @@ namespace Kerbecs::Tracing::Internal {
 		std::atomic<size_t> m_LiveCount{ 0 };
 		SpinLock m_DtorLock;
 		RegistryNode* m_Next = nullptr;
+
+		// UAF guard across slot recycling (v0.2 SS3.5). Bumped every time
+		// this slot transitions Empty/Dead -> Live (AllocationRegistry::insert).
+		// ShadowedMemory<T> snapshots this at construction time; a stale
+		// handle whose generation no longer matches the slot's current value
+		// is provably referring to a since-recycled block, even if the VA
+		// happens to have been reused for a new allocation.
+		std::atomic<uint64_t> m_Generation{ 0 };
 	};
 
 	struct alignas(64) Bucket {
