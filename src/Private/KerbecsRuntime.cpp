@@ -159,14 +159,14 @@ namespace Kerbecs::Runtime {
 		return m_MetadataZoneAllocatorImpl.allocate(v_Bytes, v_Align);
 	}
 
-	void KerbecsRuntime::registerRegion(
+	bool KerbecsRuntime::registerRegion(
 		void* p_Region,
 		void* p_ShadowMapBase,
 		void* p_MetadataMapBase,
 		size_t v_Size,
 		void* p_RegionBase) noexcept {
-		KERBECS_UNUSED(Tracing::registerRegionRecord(
-			p_Region, p_ShadowMapBase, p_MetadataMapBase, p_RegionBase, v_Size));
+		return Tracing::registerRegionRecord(
+			p_Region, p_ShadowMapBase, p_MetadataMapBase, p_RegionBase, v_Size);
 	}
 
 	void* mapToShadow(void* p_User, size_t v_Size) noexcept {

@@ -22,6 +22,7 @@
 #pragma once
 #include "Kerbecs.h"
 #include "KerbecsRuntime.h"
+#include "KerbecsEnforcements.h"
 #include "ShadowUtils.h"
 #include "Violation.h"
 
@@ -35,7 +36,8 @@
 // these handles. ShadowedMemory<T> itself only ever needs to know T.
 namespace Kerbecs {
 
-	template<typename LayoutT, typename ThreadPolicyT, typename AllocatorT>
+	template<typename LayoutT, Shadow::Utils::ThreadPolicy ThreadPolicyT, typename AllocatorT>
+		requires Enforcement::LayoutPolicyConcept<LayoutT> && Enforcement::AllocatorConcept<AllocatorT>
 	class Region; // forward declaration only - Region.h is the sole friend allowed to construct a real handle.
 
 	template<typename T>
@@ -136,7 +138,8 @@ namespace Kerbecs {
 		// obtaining a raw T* to the payload, mirroring &*it for iterators.
 
 	private:
-		template<typename LayoutT, typename ThreadPolicyT, typename AllocatorT>
+		template<typename LayoutT, Shadow::Utils::ThreadPolicy ThreadPolicyT, typename AllocatorT>
+			requires Enforcement::LayoutPolicyConcept<LayoutT> && Enforcement::AllocatorConcept<AllocatorT>
 		friend class Region;
 
 		// Friend-only, reachable only by Region's allocation path (v0.2 SS3.2).

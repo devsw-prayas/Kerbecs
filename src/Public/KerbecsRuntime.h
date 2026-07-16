@@ -177,7 +177,7 @@ namespace Kerbecs::Runtime {
 		// null base are simply unreachable via the coarse wild-pointer table -
 		// per-block resolution through a known ShadowedMemory<T> handle is
 		// unaffected either way, since that path never consults this table.
-		void registerRegion(
+		bool registerRegion(
 			void* p_Region,
 			void* p_ShadowMapBase,
 			void* p_MetadataMapBase,
