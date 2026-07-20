@@ -40,6 +40,14 @@ namespace Kerbecs {
 		requires Enforcement::LayoutPolicyConcept<LayoutT> && Enforcement::AllocatorConcept<AllocatorT>
 	class Region; // forward declaration only - Region.h is the sole friend allowed to construct a real handle.
 
+	template<typename T> class ShadowedMemory;
+
+	// Forward declaration only, so ShadowedMemory<T> can friend it below -
+	// definition stays after the class (v0.2 SS6).
+	template<typename T>
+	KERBECS_NODISCARD_MSG("Cannot discard shadow state")
+		Shadow::Utils::MemoryState shadowStateOf(const ShadowedMemory<T>& v_Handle, size_t v_Size) noexcept;
+
 	template<typename T>
 	class ShadowedMemory final {
 	public:
@@ -142,6 +150,14 @@ namespace Kerbecs {
 			requires Enforcement::LayoutPolicyConcept<LayoutT> && Enforcement::AllocatorConcept<AllocatorT>
 		friend class Region;
 
+		// shadowStateOf reads m_PayloadPtr directly (bypassing _check()) - it
+		// is a diagnostic/introspection read meant to work on handles whose
+		// generation has already been invalidated by Region::destroy, not a
+		// live dereference, so the use-after-free trap in _check() must not
+		// fire here (v0.2 SS6).
+		template<typename U>
+		friend Shadow::Utils::MemoryState shadowStateOf(const ShadowedMemory<U>& v_Handle, size_t v_Size) noexcept;
+
 		// Friend-only, reachable only by Region's allocation path (v0.2 SS3.2).
 		ShadowedMemory(void* p_MetaPtr, void* p_PayloadPtr, void* p_ShadowPtr, uint64_t v_Generation) noexcept
 			: m_MetaPtr(p_MetaPtr), m_PayloadPtr(p_PayloadPtr), m_ShadowPtr(p_ShadowPtr), m_Generation(v_Generation) {
@@ -175,9 +191,13 @@ namespace Kerbecs {
 	// same approach the shadow-map-removal commit already established for
 	// ShadowPtr before this rewrite began.
 	template<typename T>
-	KERBECS_NODISCARD_MSG("Cannot discard shadow state")
-		Shadow::Utils::MemoryState shadowStateOf(const ShadowedMemory<T>& v_Handle, size_t v_Size) noexcept {
-		T* payload = static_cast<T*>(v_Handle);
+	Shadow::Utils::MemoryState shadowStateOf(const ShadowedMemory<T>& v_Handle, size_t v_Size) noexcept {
+		// Reads m_PayloadPtr directly, not through operator T*()/_check() -
+		// this is a post-mortem introspection read that must work on handles
+		// whose generation was already invalidated by Region::destroy (that's
+		// the DESTROYED case below), so it must not trip the use-after-free
+		// trap that a live dereference would.
+		T* payload = static_cast<T*>(v_Handle.m_PayloadPtr);
 		if (!payload)
 			return Shadow::Utils::MemoryState::CORRUPTED;
 

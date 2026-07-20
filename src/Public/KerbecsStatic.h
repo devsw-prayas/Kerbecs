@@ -98,6 +98,20 @@ namespace Kerbecs::StaticSupport {
 
 }
 
+// KERBECS_CONCAT
+//
+// Two-level indirection so a __COUNTER__ argument is expanded to its numeric
+// value BEFORE token-pasting, not after. counter is used with ## at every
+// occurrence inside KERBECS_STATIC_INIT_IMPL, and per [cpp.subst] an argument
+// is only macro-expanded before substitution at occurrences NOT adjacent to
+// # or ## - since every occurrence here is a ## operand, passing __COUNTER__
+// straight into a single-level ##-pasting macro pastes the literal text
+// "__COUNTER__", not a number (harmless with one static per TU, a hard
+// redefinition the moment a second one appears - this indirection avoids
+// that entirely rather than relying on counter uniqueness per TU).
+#define KERBECS_CONCAT_IMPL(a, b) a##b
+#define KERBECS_CONCAT(a, b) KERBECS_CONCAT_IMPL(a, b)
+
 // KERBECS_STATIC_INIT_IMPL
 //
 // Internal implementation macro shared by KERBECS_PERSISTENT and
@@ -106,17 +120,17 @@ namespace Kerbecs::StaticSupport {
 // invoked (region().allocate<Type>()/construct(...)) and bare, as the
 // KerbecsDestructor NTTP.
 #define KERBECS_STATIC_INIT_IMPL(Type, name, region, counter, ...)                  \
-    struct _KerbecsStaticInit_##counter {                                           \
-        _KerbecsStaticInit_##counter() {                                            \
+    struct KERBECS_CONCAT(_KerbecsStaticInit_, counter) {                           \
+        KERBECS_CONCAT(_KerbecsStaticInit_, counter)() {                            \
             name = region().allocate<Type>();                                       \
             KERBECS_ASSERT(static_cast<Type*>(name) && "Kerbecs static region exhausted"); \
             [[maybe_unused]] const bool ok = region().construct(name, ##__VA_ARGS__); \
             KERBECS_ASSERT(ok && "Kerbecs static construct failed");                \
         }                                                                            \
     };                                                                               \
-    static _KerbecsStaticInit_##counter _kerbecsStaticInitInst_##counter;           \
+    static KERBECS_CONCAT(_KerbecsStaticInit_, counter) KERBECS_CONCAT(_kerbecsStaticInitInst_, counter); \
     static ::Kerbecs::StaticSupport::KerbecsDestructor<Type, region>                \
-        _kerbecsStaticDestructInst_##counter(&name)
+        KERBECS_CONCAT(_kerbecsStaticDestructInst_, counter)(&name)
 
 // KERBECS_PERSISTENT
 //

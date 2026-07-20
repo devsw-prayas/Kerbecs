@@ -47,6 +47,35 @@ namespace Kerbecs::Allocators {
 
 		KERBECS_NODISCARD_MSG("Cannot discard allocated block pointer")
 			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
+			uint8_t* ptr = _bumpReserve(v_Bytes, v_Align);
+			if (!ptr) return nullptr;
+
+			// commitPageIfNeeded is idempotent on both platforms — racing commits are safe.
+			uintptr_t firstPage = reinterpret_cast<uintptr_t>(ptr)
+				& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
+			uintptr_t lastPage = reinterpret_cast<uintptr_t>(ptr + v_Bytes - 1)
+				& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
+
+			for (uintptr_t page = firstPage; page <= lastPage; page += Memory::PAGE_SIZE)
+				KERBECS_UNUSED(Memory::commitPageIfNeeded(reinterpret_cast<void*>(page)));
+
+			return ptr;
+		}
+
+		void deallocate(void* /*p_Block*/, size_t /*v_Bytes*/) noexcept {}
+
+	protected:
+		// Bumps the VA cursor and returns a reserved-but-uncommitted pointer -
+		// no commit loop. Callers that hand out huge, sparsely-touched blocks
+		// (e.g. ShadowzoneAllocator's shadow blob, which spans the whole zone
+		// it shadows) must not eagerly commit every page: that turns a single
+		// allocation into millions of VirtualAlloc(MEM_COMMIT) calls and
+		// physically commits the entire block up front. Those callers rely on
+		// the existing lazy commitPageIfNeeded() calls in Region::_setShadow
+		// (and KerbecsRuntime's shadow-write paths) to commit only the pages
+		// actually touched.
+		KERBECS_NODISCARD_MSG("Cannot discard reserved block pointer")
+			uint8_t* _bumpReserve(size_t v_Bytes, size_t v_Align) noexcept {
 			if (!m_Base || v_Bytes == 0 || v_Align == 0) return nullptr;
 
 			KERBECS_ASSERT((v_Align & (v_Align - 1)) == 0);
@@ -64,29 +93,22 @@ namespace Kerbecs::Allocators {
 					next,
 					std::memory_order_release,
 					std::memory_order_relaxed)) {
-					uint8_t* ptr = m_Base + aligned;
-
-					// commitPageIfNeeded is idempotent on both platforms — racing commits are safe.
-					uintptr_t firstPage = reinterpret_cast<uintptr_t>(ptr)
-						& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
-					uintptr_t lastPage = reinterpret_cast<uintptr_t>(ptr + v_Bytes - 1)
-						& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
-
-					for (uintptr_t page = firstPage; page <= lastPage; page += Memory::PAGE_SIZE)
-						KERBECS_UNUSED(Memory::commitPageIfNeeded(reinterpret_cast<void*>(page)));
-
-					return ptr;
+					return m_Base + aligned;
 				}
 			}
 		}
-
-		void deallocate(void* /*p_Block*/, size_t /*v_Bytes*/) noexcept {}
 	};
 
 	struct KERBECS_RUNTIME_API ShadowzoneAllocator final : BumpAllocatorBase {
+		// Shadow blobs span an entire zone's worth of shadow bits (up to
+		// SHADOWZONE_SIZE / 8) but are only ever touched sparsely, one shadow
+		// byte at a time, via Region::_setShadow's commitPageIfNeeded calls.
+		// Reserve the VA range and leave every page uncommitted here - eagerly
+		// committing (BumpAllocatorBase::allocate's per-page loop) would
+		// physically commit the whole blob on first use.
 		KERBECS_NODISCARD_MSG("Cannot discard allocated shadow block pointer")
 			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
-			return BumpAllocatorBase::allocate(v_Bytes, v_Align);
+			return _bumpReserve(v_Bytes, v_Align);
 		}
 
 		void deallocate(void* p_Block, size_t v_Bytes) noexcept {
