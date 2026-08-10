@@ -75,7 +75,6 @@ namespace Kerbecs::Tracing {
 		uint64_t          v_AllocatorID,
 		uint32_t          v_ThreadID,
 		const char* p_Name,
-		const StackTrace& v_AllocTrace,
 		size_t            v_ObjectCount) noexcept {
 		if (!p_BlockBase)
 			return false;
@@ -126,10 +125,7 @@ namespace Kerbecs::Tracing {
 		newNode->m_AllocatorID = v_AllocatorID;
 		newNode->m_ThreadID = v_ThreadID;
 		newNode->m_Name = p_Name;
-		newNode->m_AllocTrace = v_AllocTrace;
 		newNode->m_LiveCount.store(v_ObjectCount, std::memory_order_relaxed);
-
-		std::memset(&newNode->m_FreeTrace, 0, sizeof(StackTrace));
 
 		newNode->m_State.store(
 			Internal::AllocationState::Live,
@@ -225,7 +221,6 @@ namespace Kerbecs::Tracing {
 			return;
 		}
 
-		std::memset(&node->m_FreeTrace, 0, sizeof(StackTrace));
 		node->m_DtorLock.unlock();
 
 		m_Count.fetch_sub(1, std::memory_order_relaxed);

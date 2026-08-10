@@ -99,17 +99,22 @@ namespace Kerbecs {
 
 		template<typename T>
 		ShadowedMemory<T> allocate(size_t v_Count = 1, size_t v_Align = alignof(T)) noexcept {
-			if (!m_Initialized || !m_RegionBase || v_Count == 0 || v_Count > std::numeric_limits<size_t>::max() / sizeof(T)) return {};
+			if (!m_Initialized || !m_RegionBase || v_Count == 0) return {};
+			if (v_Count > std::numeric_limits<size_t>::max() / sizeof(T)) { _reportViolation(ViolationKind::SizeOverflow, nullptr, nullptr, v_Count); return {}; }
 			const size_t userSize = v_Count * sizeof(T);
 			const size_t alignment = std::max(v_Align, alignof(T));
 			const size_t blockSize = LayoutT::blockSize(userSize, alignment);
-			if (blockSize < userSize) return {};
+			if (blockSize < userSize) { _reportViolation(ViolationKind::SizeOverflow, nullptr, nullptr, userSize); return {}; }
 			void* block = m_AllocatorSupport.allocate(blockSize, alignment);
 			if (!block) return {};
 			auto offsets = LayoutT::place(block, blockSize, userSize, alignment);
 			void* payload = static_cast<std::byte*>(block) + offsets.m_UserDataOffset;
-			if (!_contains(payload, userSize) || !_setShadow(payload, userSize, true)) { m_AllocatorSupport.deallocate(block, blockSize); return {}; }
-			if (!m_AllocationRegistry.insert(block, payload, blockSize, userSize, reinterpret_cast<uintptr_t>(&m_Allocator), Tracing::Internal::currentThreadID(), nullptr, {}, v_Count)) {
+			if (!_contains(payload, userSize) || !_setShadow(payload, userSize, true)) {
+				_reportViolation(ViolationKind::WildPointer, payload, block, blockSize);
+				m_AllocatorSupport.deallocate(block, blockSize); return {};
+			}
+			if (!m_AllocationRegistry.insert(block, payload, blockSize, userSize, reinterpret_cast<uintptr_t>(&m_Allocator), Tracing::Internal::currentThreadID(), nullptr, v_Count)) {
+				_reportViolation(ViolationKind::OverlapDetected, payload, block, blockSize);
 				KERBECS_UNUSED(_setShadow(payload, userSize, false)); m_AllocatorSupport.deallocate(block, blockSize); return {};
 			}
 			auto* node = m_AllocationRegistry.find(block);
@@ -126,7 +131,11 @@ namespace Kerbecs {
 		template<typename T, typename... Args>
 		bool construct(const ShadowedMemory<T>& v_Handle, Args&&... v_Args) noexcept {
 			auto* node = _nodeFor(v_Handle);
-			if (!node || reinterpret_cast<uintptr_t>(v_Handle.m_PayloadPtr) % alignof(T) != 0) return false;
+			if (!node) { _reportViolation(ViolationKind::WildPointer, v_Handle.m_PayloadPtr, nullptr, sizeof(T)); return false; }
+			if (reinterpret_cast<uintptr_t>(v_Handle.m_PayloadPtr) % alignof(T) != 0) {
+				_reportViolation(ViolationKind::AlignmentViolation, v_Handle.m_PayloadPtr, node->m_BlockBase, sizeof(T));
+				return false;
+			}
 			if (!_setShadow(v_Handle.m_PayloadPtr, sizeof(T), false)) return false;
 			::new (v_Handle.m_PayloadPtr) T(std::forward<Args>(v_Args)...);
 			return true;
@@ -135,9 +144,20 @@ namespace Kerbecs {
 		template<typename T>
 		bool destroy(const ShadowedMemory<T>& v_Handle) noexcept {
 			auto* node = _nodeFor(v_Handle);
-			if (!node) return false;
+			if (!node) { _reportViolation(ViolationKind::DoubleFree, v_Handle.m_PayloadPtr, nullptr, sizeof(T)); return false; }
 			auto* retiring = m_AllocationRegistry.beginRetiring(node->m_BlockBase, Tracing::Internal::currentThreadID(), ThreadPolicyT);
-			if (!retiring) return false;
+			if (!retiring) {
+				// beginRetiring() folds three failures into one nullptr - re-read node
+				// state to classify (best-effort, TOCTOU race against beginRetiring).
+				ViolationKind kind = ViolationKind::DoubleFree;
+				if constexpr (ThreadPolicyT == Shadow::Utils::ThreadPolicy::Strict) {
+					if (Tracing::Internal::currentThreadID() != node->m_ThreadID) kind = ViolationKind::ThreadOwnership;
+				}
+				if (kind == ViolationKind::DoubleFree && node->m_State.load(std::memory_order_acquire) == Tracing::Internal::AllocationState::Retiring)
+					kind = ViolationKind::RetiredBoundaryViolation;
+				_reportViolation(kind, v_Handle.m_PayloadPtr, node->m_BlockBase, sizeof(T));
+				return false;
+			}
 			const bool finalObject = retiring->m_LiveCount.fetch_sub(1, std::memory_order_acq_rel) == 1;
 			// Invalidate generation before object teardown to prevent concurrent stale-handle reads in _check().
 			if (finalObject) static_cast<Runtime::AccessInfo*>(v_Handle.m_MetaPtr)->m_Generation.store(0, std::memory_order_release);
@@ -148,6 +168,13 @@ namespace Kerbecs {
 			return true;
 		}
 	private:
+		// Shared by every failure branch above instead of each duplicating the
+		// stats-bump + makeViolation()/pushViolation() pair.
+		void _reportViolation(ViolationKind v_Kind, void* p_Address, void* p_BlockBase, size_t v_BlockSize) noexcept {
+			statsOnViolation(&Runtime::instance().m_Stats);
+			Internal::pushViolation(makeViolation(v_Kind, p_Address, p_BlockBase, v_BlockSize));
+		}
+
 		template<typename T>
 		Tracing::Internal::RegistryNode* _nodeFor(const ShadowedMemory<T>& v_Handle) noexcept {
 			if (!v_Handle.m_MetaPtr || !m_MetadataMapBase) return nullptr;

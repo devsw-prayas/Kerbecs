@@ -62,7 +62,6 @@ namespace Kerbecs::Tracing {
 			uint64_t          v_AllocatorID,
 			uint32_t          v_ThreadID,
 			const char* p_Name,
-			const StackTrace& v_AllocTrace,
 			size_t            v_ObjectCount) noexcept;
 
 		Internal::RegistryNode* beginRetiring(

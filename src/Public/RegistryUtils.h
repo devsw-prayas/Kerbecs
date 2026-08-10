@@ -20,7 +20,7 @@
 */
 
 #pragma once
-#include "Violation.h"
+#include "Kerbecs.h"
 
 namespace Kerbecs::Tracing::Internal {
 	inline thread_local const uint8_t t_ThreadAnchor = 0;
@@ -69,8 +69,6 @@ namespace Kerbecs::Tracing::Internal {
 		size_t       m_BlockSize = 0;
 		size_t       m_UserSize = 0;
 		uint64_t     m_AllocatorID = 0;
-		StackTrace   m_AllocTrace = {};
-		StackTrace   m_FreeTrace = {};
 		const char* m_Name = nullptr;
 		uint32_t     m_ThreadID = 0;
 

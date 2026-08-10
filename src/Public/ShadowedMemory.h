@@ -106,14 +106,12 @@ namespace Kerbecs {
 			const ptrdiff_t newOffsetEnd = byteOffset + static_cast<ptrdiff_t>(sizeof(T));
 
 			if (newOffsetEnd < 0 || byteOffset < 0 || static_cast<size_t>(newOffsetEnd) > info->m_UserSize) {
-				Violation v{};
-				v.m_Kind = ViolationKind::BufferOverflow;
-				v.m_Address = static_cast<std::byte*>(m_PayloadPtr) + byteOffset;
-				v.m_BlockBase = m_PayloadPtr;
-				v.m_BlockSize = info->m_UserSize;
 				statsOnViolation(&Runtime::instance().m_Stats);
-				// Mid-arithmetic bounds violations update global stats since ShadowedMemory<T> has
-				// no Logger reference; Region callers re-check via their Logger-aware path.
+				Internal::pushViolation(makeViolation(
+					ViolationKind::BufferOverflow,
+					static_cast<std::byte*>(m_PayloadPtr) + byteOffset,
+					m_PayloadPtr,
+					info->m_UserSize));
 				return ShadowedMemory{};
 			}
 
@@ -149,6 +147,7 @@ namespace Kerbecs {
 			const auto* info = static_cast<const Runtime::AccessInfo*>(m_MetaPtr);
 			if (info->m_Generation.load(std::memory_order_acquire) != m_Generation) {
 				statsOnViolation(&Runtime::instance().m_Stats);
+				Internal::pushViolation(makeViolation(ViolationKind::UseAfterFree, m_PayloadPtr, m_PayloadPtr, 0));
 				KERBECS_TRAP();
 			}
 		}
