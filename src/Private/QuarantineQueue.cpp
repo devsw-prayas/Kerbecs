@@ -22,7 +22,7 @@
 #include "Kerbecs.h"
 #include "QuarantineQueue.h"
 #include "KerbecsDiagnostics.h"
-#include "MemoryZone.h"
+#include "KerbecsRuntime.h"
 #include "RegistryUtils.h"
 
 namespace Kerbecs::Quarantine {
@@ -66,38 +66,40 @@ namespace Kerbecs::Quarantine {
 	}
 
 	bool QuarantineQueue::enqueue(
-		void*                            p_BlockBase,
-		size_t                           v_BlockSize,
-		uint64_t                         v_Epoch,
-		void*                            p_Allocator,
-		void                           (*p_DeallocThunk)(void*, void*, size_t),
-		Tracing::Internal::RegistryNode* p_Node) noexcept {
-		if (!m_Slots || !p_BlockBase)
+		void*                         p_BlockBase,
+		size_t                        v_BlockSize,
+		uint64_t                      v_Epoch,
+		void*                         p_Allocator,
+		void                        (*p_DeallocThunk)(void*, void*, size_t),
+		Tracing::AllocationRegistry* p_OwningRegistry) noexcept {
+		if (!m_Slots || !p_BlockBase || !p_OwningRegistry)
 			return false;
 
 		const size_t mask = m_Capacity - 1;
 		const size_t tail = m_Tail.fetch_add(1, std::memory_order_acq_rel);
+
+		// Saturation is decided by occupancy (tail - head), not by peeking at the
+		// claimed slot's own content - two fetch_adds exactly m_Capacity apart can
+		// land on the same index, and if the earlier one hasn't published its
+		// m_BlockBase yet, a content check alone would pass and both threads would
+		// write the slot's non-atomic fields concurrently. The acquire load of
+		// m_Head here synchronizes with flushEligible's release fetch_add on
+		// m_Head, which happens strictly after that slot's previous occupant was
+		// already nulled out - so once this check passes, the slot is provably free.
+		const size_t head = m_Head.load(std::memory_order_acquire);
+		if (tail - head >= m_Capacity)
+			_onSaturation();
+
 		const size_t idx = tail & mask;
-
 		QuarantineEntry& slot = m_Slots[idx];
+		KERBECS_ASSERT(slot.m_BlockBase.load(std::memory_order_relaxed) == nullptr);
 
-		// Check for saturation before writing. If the slot is still occupied
-		// the queue is full - fail fast, no graceful eviction.
-		void* existing = slot.m_BlockBase.load(std::memory_order_acquire);
-		if (existing != nullptr)
-			_onSaturation(); // never returns
-
-		// Write all non-atomic fields BEFORE the atomic store of m_BlockBase.
-		// Any thread that observes a non-null m_BlockBase with acquire will
-		// also see these fields due to the release/acquire pair.
 		slot.m_BlockSize = v_BlockSize;
 		slot.m_Epoch = v_Epoch;
 		slot.m_Allocator = p_Allocator;
 		slot.m_DeallocThunk = p_DeallocThunk;
-		slot.m_Node = p_Node;
+		slot.m_OwningRegistry = p_OwningRegistry;
 
-		// Publish the entry. Release semantics guarantee the fields above
-		// are visible to any subsequent acquire load of m_BlockBase.
 		slot.m_BlockBase.store(p_BlockBase, std::memory_order_release);
 
 		statsOnQuarantineEnqueue(m_Stats);
@@ -105,9 +107,8 @@ namespace Kerbecs::Quarantine {
 	}
 
 	size_t QuarantineQueue::flushEligible(
-		Tracing::NodePoolSegment v_Segment,
-		size_t                   v_MaxCount,
-		bool                     v_Force) noexcept {
+		size_t v_MaxCount,
+		bool   v_Force) noexcept {
 		if (!m_Slots)
 			return 0;
 
@@ -129,14 +130,13 @@ namespace Kerbecs::Quarantine {
 			if (!base)
 				break;
 
-			// Bypass epoch check if force-flushing (used at teardown).
 			if (!v_Force) {
-				const uint64_t curEpoch = MemoryZone::instance().m_Epoch.load(std::memory_order_acquire);
+				const uint64_t curEpoch = Runtime::instance().m_Epoch.load(std::memory_order_acquire);
 				if (slot.m_Epoch + 2 > curEpoch)
 					break;
 			}
 
-			_retireSlot(slot, v_Segment);
+			_retireSlot(slot);
 
 			m_Head.fetch_add(1, std::memory_order_release);
 			flushed++;
@@ -146,60 +146,25 @@ namespace Kerbecs::Quarantine {
 		return flushed;
 	}
 
-	void QuarantineQueue::_retireSlot(
-		QuarantineEntry& v_Entry,
-		Tracing::NodePoolSegment v_Segment) noexcept {
+	void QuarantineQueue::_retireSlot(QuarantineEntry& v_Entry) noexcept {
 		void* base = v_Entry.m_BlockBase.load(std::memory_order_acquire);
 		KERBECS_ASSERT(base != nullptr);
 
-		// Prefer O(1) retirement via stored node pointer if available.
-		if (v_Entry.m_Node) {
-			Tracing::Internal::AllocationState expected =
-				Tracing::Internal::AllocationState::Quarantine;
+		if (v_Entry.m_OwningRegistry)
+			KERBECS_UNUSED(v_Entry.m_OwningRegistry->retire(base));
 
-			v_Entry.m_Node->m_State.compare_exchange_strong(
-				expected,
-				Tracing::Internal::AllocationState::Dead,
-				std::memory_order_acq_rel,
-				std::memory_order_acquire);
-		}
-		else if (v_Segment.m_Pool && v_Segment.m_Capacity > 0) {
-			// Fallback to O(N) linear scan if the node pointer is missing.
-			bool found = false;
-			for (size_t i = 0; i < v_Segment.m_Capacity; ++i) {
-				Tracing::Internal::RegistryNode& node = v_Segment.m_Pool[i];
-
-				if (node.m_BlockBase != base)
-					continue;
-
-				found = true;
-				Tracing::Internal::AllocationState expected =
-					Tracing::Internal::AllocationState::Quarantine;
-				node.m_State.compare_exchange_strong(
-					expected,
-					Tracing::Internal::AllocationState::Dead,
-					std::memory_order_acq_rel,
-					std::memory_order_acquire);
-				break;
-			}
-			KERBECS_UNUSED(found);
-		}
-
-		// Type-erased deallocation. Thunk casts p_Allocator back to the
-		// concrete MemorySupport<A>* and calls deallocate.
 		if (v_Entry.m_DeallocThunk && v_Entry.m_Allocator)
 			v_Entry.m_DeallocThunk(v_Entry.m_Allocator, base, v_Entry.m_BlockSize);
 
 		statsOnDestroy(m_Stats, v_Entry.m_BlockSize);
 		statsOnQuarantineDequeue(m_Stats);
 
-		// Null the entry. m_BlockBase last with release so a concurrent
-		// enqueue that observes null knows the slot is fully cleared.
+		// m_BlockBase nulled last with release — concurrent enqueue seeing null knows slot is clear.
 		v_Entry.m_BlockSize = 0;
 		v_Entry.m_Epoch = 0;
 		v_Entry.m_Allocator = nullptr;
 		v_Entry.m_DeallocThunk = nullptr;
-		v_Entry.m_Node = nullptr;
+		v_Entry.m_OwningRegistry = nullptr;
 
 		v_Entry.m_BlockBase.store(nullptr, std::memory_order_release);
 	}

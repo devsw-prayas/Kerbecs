@@ -20,11 +20,9 @@
 */
 
 #pragma once
-#include "Violation.h"
+#include "Kerbecs.h"
 
 namespace Kerbecs::Tracing::Internal {
-
-
 	inline thread_local const uint8_t t_ThreadAnchor = 0;
 
 	KERBECS_FORCEINLINE uint32_t currentThreadID() noexcept {
@@ -32,24 +30,9 @@ namespace Kerbecs::Tracing::Internal {
 		return static_cast<uint32_t>((addr * 0x9e3779b97f4a7c15ULL) >> 32);
 	}
 
-
-
-	// AllocationState
-	//
-	//  Empty      - node is unused in the pool, never been assigned
-	//  Live       - block is allocated, all objects valid, safe to access
-	//  Retiring   - dtor cycle is in progress on this block; the thread that
-	//               won m_DtorLock owns the transition. Any other thread
-	//               attempting to access this block must treat it as a
-	//               RetiredBoundaryViolation and fail fast. Transitions back
-	//               to Live if m_LiveCount > 0 after the dtor cycle, or
-	//               forward to Quarantine if m_LiveCount == 0.
-	//  Quarantine - block is freed from the user perspective but memory is
-	//               not yet reclaimed. Use-after-free detection window.
-	//               Waits 2 epoch cycles before transitioning to Dead.
-	//  Dead       - node is fully retired. Slot remains in the bucket chain
-	//               but is skipped by all lookups. Memory has been released
-	//               via the stored dealloc thunk.
+	// AllocationState lifecycle:
+	// Empty (unused) -> Live (allocated) -> Retiring (dtor active) ->
+	// Quarantine (freed, UAF detection window) -> Dead (reclaimed, skipped by lookups).
 	enum class KERBECS_RUNTIME_API AllocationState : uint8_t {
 		Empty = 0,
 		Live = 1,
@@ -86,8 +69,6 @@ namespace Kerbecs::Tracing::Internal {
 		size_t       m_BlockSize = 0;
 		size_t       m_UserSize = 0;
 		uint64_t     m_AllocatorID = 0;
-		StackTrace   m_AllocTrace = {};
-		StackTrace   m_FreeTrace = {};
 		const char* m_Name = nullptr;
 		uint32_t     m_ThreadID = 0;
 
@@ -95,11 +76,14 @@ namespace Kerbecs::Tracing::Internal {
 		std::atomic<size_t> m_LiveCount{ 0 };
 		SpinLock m_DtorLock;
 		RegistryNode* m_Next = nullptr;
+
+		// UAF guard across slot recycling: Bumped on insert.
+		// ShadowedMemory<T> snapshots this; mismatch detects recycled VA usage.
+		std::atomic<uint64_t> m_Generation{ 0 };
 	};
 
 	struct alignas(64) Bucket {
 		std::atomic<RegistryNode*> m_Head{ nullptr };
 		SpinLock                   m_Lock;
 	};
-
 }

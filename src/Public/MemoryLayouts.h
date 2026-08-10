@@ -22,7 +22,7 @@
 #pragma once
 #include "Kerbecs.h"
 #include "KerbecsMemory.h"
-#include "MemoryZone.h"
+#include "KerbecsRuntime.h"
 #include "ShadowUtils.h"
 #include "KerbecsEnforcements.h"
 
@@ -33,7 +33,7 @@ namespace Kerbecs::Layout {
 
 	/*
 	 * NormalLayout
-	 * 
+	 *
 	 * [ Leading redzone  | REDZONE_SIZE bytes                      ]
 	 * [ User payload     | payloadSize bytes, aligned to alignof(T)]
 	 * [ Trailing redzone | REDZONE_SIZE bytes                      ]
@@ -52,10 +52,10 @@ namespace Kerbecs::Layout {
 		KERBECS_NODISCARD_MSG("Cannot discard computed block size")
 			static size_t blockSize(size_t v_PayloadSize, size_t v_Align) noexcept {
 
-			size_t afterLeading = Memory::alignUp(MemoryZone::REDZONE_SIZE, v_Align);
-			size_t afterPayload = afterLeading + v_PayloadSize + MemoryZone::REDZONE_SIZE;
-			size_t afterTrailing = Memory::alignUp(afterPayload, alignof(MemoryZone::NormalMetaData));
-			return afterTrailing + sizeof(MemoryZone::NormalMetaData);
+			size_t afterLeading = Memory::alignUp(Runtime::REDZONE_SIZE, v_Align);
+			size_t afterPayload = afterLeading + v_PayloadSize + Runtime::REDZONE_SIZE;
+			size_t afterTrailing = Memory::alignUp(afterPayload, alignof(Runtime::NormalMetaData));
+			return afterTrailing + sizeof(Runtime::NormalMetaData);
 		}
 
 		static Offsets place(void* p_Block, size_t v_BlockSize, size_t v_PayloadSize, size_t v_Align) noexcept {
@@ -66,16 +66,16 @@ namespace Kerbecs::Layout {
 			Offsets o{};
 			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			o.m_UserDataOffset = Memory::alignUp(MemoryZone::REDZONE_SIZE, v_Align);
-			std::memset(base, MemoryZone::REDZONE, o.m_UserDataOffset);
+			o.m_UserDataOffset = Memory::alignUp(Runtime::REDZONE_SIZE, v_Align);
+			std::memset(base, Runtime::REDZONE, o.m_UserDataOffset);
 
 			o.m_RedzoneOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
 			o.m_MetaDataOffset = Memory::alignUp(
-				o.m_RedzoneOffsetTrailing + MemoryZone::REDZONE_SIZE,
-				alignof(MemoryZone::NormalMetaData));
+				o.m_RedzoneOffsetTrailing + Runtime::REDZONE_SIZE,
+				alignof(Runtime::NormalMetaData));
 
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, o.m_MetaDataOffset - o.m_RedzoneOffsetTrailing);
-			::new (base + o.m_MetaDataOffset) MemoryZone::NormalMetaData{};
+			std::memset(base + o.m_RedzoneOffsetTrailing, Runtime::REDZONE, o.m_MetaDataOffset - o.m_RedzoneOffsetTrailing);
+			::new (base + o.m_MetaDataOffset) Runtime::NormalMetaData{};
 
 			return o;
 		}
@@ -102,7 +102,7 @@ namespace Kerbecs::Layout {
 
 	/*
 	 * EnhancedLayout
-	 * 
+	 *
 	 * [ Leading redzone          | REDZONE_SIZE bytes                           ]
 	 * [ Leading EnhancedMetaData | sizeof(EnhancedMetaData), aligned            ]
 	 * [ Leading canary           | CANARY_SIZE bytes                            ]
@@ -126,23 +126,16 @@ namespace Kerbecs::Layout {
 
 		KERBECS_NODISCARD_MSG("Cannot discard computed block size")
 			static size_t blockSize(size_t v_PayloadSize, size_t v_Align) noexcept {
-			// leading redzone
-			size_t cursor = MemoryZone::REDZONE_SIZE;
-			// leading metadata (aligned)
-			cursor = Memory::alignUp(cursor, alignof(MemoryZone::EnhancedMetaData));
-			cursor += sizeof(MemoryZone::EnhancedMetaData);
-			// leading canary
-			cursor += MemoryZone::CANARY_SIZE;
-			// user payload (aligned)
+			size_t cursor = Runtime::REDZONE_SIZE;
+			cursor = Memory::alignUp(cursor, alignof(Runtime::EnhancedMetaData));
+			cursor += sizeof(Runtime::EnhancedMetaData);
+			cursor += Runtime::CANARY_SIZE;
 			cursor = Memory::alignUp(cursor, v_Align);
 			cursor += v_PayloadSize;
-			// trailing canary
-			cursor += MemoryZone::CANARY_SIZE;
-			// trailing metadata (aligned)
-			cursor = Memory::alignUp(cursor, alignof(MemoryZone::EnhancedMetaData));
-			cursor += sizeof(MemoryZone::EnhancedMetaData);
-			// trailing redzone
-			cursor += MemoryZone::REDZONE_SIZE;
+			cursor += Runtime::CANARY_SIZE;
+			cursor = Memory::alignUp(cursor, alignof(Runtime::EnhancedMetaData));
+			cursor += sizeof(Runtime::EnhancedMetaData);
+			cursor += Runtime::REDZONE_SIZE;
 			return cursor;
 		}
 
@@ -155,30 +148,30 @@ namespace Kerbecs::Layout {
 			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
 			o.m_MetaDataOffsetLeading = Memory::alignUp(
-				MemoryZone::REDZONE_SIZE,
-				alignof(MemoryZone::EnhancedMetaData));
-			std::memset(base, MemoryZone::REDZONE, o.m_MetaDataOffsetLeading);
+				Runtime::REDZONE_SIZE,
+				alignof(Runtime::EnhancedMetaData));
+			std::memset(base, Runtime::REDZONE, o.m_MetaDataOffsetLeading);
 
-			::new (base + o.m_MetaDataOffsetLeading) MemoryZone::EnhancedMetaData{};
+			::new (base + o.m_MetaDataOffsetLeading) Runtime::EnhancedMetaData{};
 
-			o.m_CanaryOffsetLeading = o.m_MetaDataOffsetLeading + sizeof(MemoryZone::EnhancedMetaData);
+			o.m_CanaryOffsetLeading = o.m_MetaDataOffsetLeading + sizeof(Runtime::EnhancedMetaData);
 
 			o.m_UserDataOffset = Memory::alignUp(
-				o.m_CanaryOffsetLeading + MemoryZone::CANARY_SIZE,
+				o.m_CanaryOffsetLeading + Runtime::CANARY_SIZE,
 				v_Align);
 			_stampCanary(base + o.m_CanaryOffsetLeading, o.m_UserDataOffset - o.m_CanaryOffsetLeading);
 
 			o.m_CanaryOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
 
 			o.m_MetaDataOffsetTrailing = Memory::alignUp(
-				o.m_CanaryOffsetTrailing + MemoryZone::CANARY_SIZE,
-				alignof(MemoryZone::EnhancedMetaData));
+				o.m_CanaryOffsetTrailing + Runtime::CANARY_SIZE,
+				alignof(Runtime::EnhancedMetaData));
 			_stampCanary(base + o.m_CanaryOffsetTrailing, o.m_MetaDataOffsetTrailing - o.m_CanaryOffsetTrailing);
-			::new (base + o.m_MetaDataOffsetTrailing) MemoryZone::EnhancedMetaData{};
+			::new (base + o.m_MetaDataOffsetTrailing) Runtime::EnhancedMetaData{};
 
-			o.m_RedzoneOffsetTrailing = o.m_MetaDataOffsetTrailing + sizeof(MemoryZone::EnhancedMetaData);
+			o.m_RedzoneOffsetTrailing = o.m_MetaDataOffsetTrailing + sizeof(Runtime::EnhancedMetaData);
 			const size_t totalSize = v_BlockSize;
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
+			std::memset(base + o.m_RedzoneOffsetTrailing, Runtime::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
 
 			return o;
 		}
@@ -212,9 +205,9 @@ namespace Kerbecs::Layout {
 			size_t fullWords = v_Length / sizeof(uint64_t);
 			size_t tail = v_Length % sizeof(uint64_t);
 			for (size_t i = 0; i < fullWords; i++)
-				std::memcpy(p_Dst + i * sizeof(uint64_t), &MemoryZone::GUARD_CANARY, sizeof(uint64_t));
+				std::memcpy(p_Dst + i * sizeof(uint64_t), &Runtime::GUARD_CANARY, sizeof(uint64_t));
 			if (tail > 0)
-				std::memcpy(p_Dst + fullWords * sizeof(uint64_t), &MemoryZone::GUARD_CANARY, tail);
+				std::memcpy(p_Dst + fullWords * sizeof(uint64_t), &Runtime::GUARD_CANARY, tail);
 		}
 	};
 
@@ -223,13 +216,13 @@ namespace Kerbecs::Layout {
 
 	/*
 	 * StaticLayout
-	 * 
+	 *
 	 * [ Leading redzone  | REDZONE_SIZE bytes                      ]
 	 * [ Leading canary   | CANARY_SIZE bytes                       ]
 	 * [ User payload     | payloadSize bytes, aligned to alignof(T)]
 	 * [ Trailing canary  | CANARY_SIZE bytes                       ]
 	 * [ Trailing redzone | REDZONE_SIZE bytes                      ]
-	 * 
+	 *
 	 * No in-block metadata; handle persists in static region.
 	 */
 
@@ -245,12 +238,12 @@ namespace Kerbecs::Layout {
 
 		KERBECS_NODISCARD_MSG("Cannot discard computed block size")
 			static size_t blockSize(size_t v_PayloadSize, size_t v_Align) noexcept {
-			size_t cursor = MemoryZone::REDZONE_SIZE;              // leading redzone
-			cursor += MemoryZone::CANARY_SIZE;                     // leading canary
-			cursor = Memory::alignUp(cursor, v_Align);            // align for payload
-			cursor += v_PayloadSize;                               // payload
-			cursor += MemoryZone::CANARY_SIZE;                     // trailing canary
-			cursor += MemoryZone::REDZONE_SIZE;                    // trailing redzone
+			size_t cursor = Runtime::REDZONE_SIZE;
+			cursor += Runtime::CANARY_SIZE;
+			cursor = Memory::alignUp(cursor, v_Align);
+			cursor += v_PayloadSize;
+			cursor += Runtime::CANARY_SIZE;
+			cursor += Runtime::REDZONE_SIZE;
 			return cursor;
 		}
 
@@ -262,21 +255,21 @@ namespace Kerbecs::Layout {
 			Offsets o{};
 			KERBECS_UNUSED(o);
 			o.m_RedzoneOffsetLeading = 0;
-			o.m_CanaryOffsetLeading = MemoryZone::REDZONE_SIZE;
+			o.m_CanaryOffsetLeading = Runtime::REDZONE_SIZE;
 
-			std::memset(base, MemoryZone::REDZONE, o.m_CanaryOffsetLeading);
+			std::memset(base, Runtime::REDZONE, o.m_CanaryOffsetLeading);
 
 			o.m_UserDataOffset = Memory::alignUp(
-				o.m_CanaryOffsetLeading + MemoryZone::CANARY_SIZE,
+				o.m_CanaryOffsetLeading + Runtime::CANARY_SIZE,
 				v_Align);
 			_stampCanary(base + o.m_CanaryOffsetLeading, o.m_UserDataOffset - o.m_CanaryOffsetLeading);
 
 			o.m_CanaryOffsetTrailing = o.m_UserDataOffset + v_PayloadSize;
 
-			o.m_RedzoneOffsetTrailing = o.m_CanaryOffsetTrailing + MemoryZone::CANARY_SIZE;
+			o.m_RedzoneOffsetTrailing = o.m_CanaryOffsetTrailing + Runtime::CANARY_SIZE;
 			_stampCanary(base + o.m_CanaryOffsetTrailing, o.m_RedzoneOffsetTrailing - o.m_CanaryOffsetTrailing);
 			const size_t totalSize = v_BlockSize;
-			std::memset(base + o.m_RedzoneOffsetTrailing, MemoryZone::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
+			std::memset(base + o.m_RedzoneOffsetTrailing, Runtime::REDZONE, totalSize - o.m_RedzoneOffsetTrailing);
 
 			return o;
 		}
@@ -310,12 +303,12 @@ namespace Kerbecs::Layout {
 			size_t fullWords = v_Length / sizeof(uint64_t);
 			size_t tail = v_Length % sizeof(uint64_t);
 			for (size_t i = 0; i < fullWords; i++)
-				std::memcpy(p_Dst + i * sizeof(uint64_t), &MemoryZone::GUARD_CANARY, sizeof(uint64_t));
+				std::memcpy(p_Dst + i * sizeof(uint64_t), &Runtime::GUARD_CANARY, sizeof(uint64_t));
 			if (tail > 0)
-				std::memcpy(p_Dst + fullWords * sizeof(uint64_t), &MemoryZone::GUARD_CANARY, tail);
+				std::memcpy(p_Dst + fullWords * sizeof(uint64_t), &Runtime::GUARD_CANARY, tail);
 		}
 	};
 
 	static_assert(Enforcement::LayoutPolicyConcept<StaticLayout>);
 
-} 
+}

@@ -21,7 +21,7 @@
 
 #pragma once
 #include "Kerbecs.h"
-#include "MemoryZone.h"
+#include "KerbecsRuntime.h"
 #include "ShadowUtils.h"
 
 #include "KerbecsEnforcements.h"
@@ -51,8 +51,8 @@ namespace Kerbecs::Checksums {
 		requires Enforcement::HashAccumulatorConcept<HA>
 	bool initEnhancedMetadata(
 		HA* p_Hasher,
-		MemoryZone::EnhancedMetaData* p_Leading,
-		MemoryZone::EnhancedMetaData* p_Trailing,
+		Runtime::EnhancedMetaData* p_Leading,
+		Runtime::EnhancedMetaData* p_Trailing,
 		size_t                         v_TotalSize,
 		uint64_t                       v_AllocatorID,
 		uint64_t                       v_ThreadID,
@@ -77,7 +77,6 @@ namespace Kerbecs::Checksums {
 		p_Leading->m_ThreadHash = threadHash;
 		p_Leading->m_Checksum = checksum;
 
-		// Mirror into trailing
 		*p_Trailing = *p_Leading;
 
 		return true;
@@ -85,7 +84,7 @@ namespace Kerbecs::Checksums {
 
 
 	inline bool initNormalMetadata(
-		MemoryZone::NormalMetaData* p_Meta,
+		Runtime::NormalMetaData* p_Meta,
 		size_t                      v_TotalSize,
 		uint64_t                    v_AllocatorID) noexcept {
 		if (!p_Meta) return false;
@@ -102,8 +101,8 @@ namespace Kerbecs::Checksums {
 		requires Enforcement::HashAccumulatorConcept<HA>
 	bool verifyEnhancedMetadata(
 		HA* p_Hasher,
-		const MemoryZone::EnhancedMetaData* p_Leading,
-		const MemoryZone::EnhancedMetaData* p_Trailing,
+		const Runtime::EnhancedMetaData* p_Leading,
+		const Runtime::EnhancedMetaData* p_Trailing,
 		size_t                               v_ExpectedTotalSize,
 		uint64_t                             v_ExpectedAllocatorID,
 		uint64_t                             v_ExpectedThreadID,
@@ -111,15 +110,12 @@ namespace Kerbecs::Checksums {
 		Shadow::Utils::ThreadPolicy                  v_Policy) noexcept {
 		if (!p_Hasher || !p_Leading || !p_Trailing) return false;
 
-		// 1. Size check
 		if (p_Leading->m_TotalSize != v_ExpectedTotalSize)
 			return false;
 
-		// 2. Allocator check
 		if (p_Leading->m_AllocatorHash != v_ExpectedAllocatorID)
 			return false;
 
-		// 3. Thread check
 		if (v_Policy == Shadow::Utils::ThreadPolicy::Strict) {
 			if (p_Leading->m_ThreadHash != v_ExpectedThreadID)
 				return false;
@@ -139,7 +135,7 @@ namespace Kerbecs::Checksums {
 	}
 
 	KERBECS_FORCEINLINE bool verifyNormalMetadata(
-		const MemoryZone::NormalMetaData* p_Meta,
+		const Runtime::NormalMetaData* p_Meta,
 		size_t                            v_ExpectedTotalSize,
 		uint64_t                          v_ExpectedAllocatorID) noexcept {
 		if (!p_Meta) return false;

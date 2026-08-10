@@ -23,12 +23,6 @@
 #include "Kerbecs.h"
 
 namespace Kerbecs {
-	struct KERBECS_RUNTIME_API StackTrace {
-		static constexpr size_t MAX_FRAMES = 16;
-		void* m_Frames[MAX_FRAMES]{};
-		size_t m_FrameCount = 0;
-	};
-
 	enum class KERBECS_RUNTIME_API ViolationKind : uint8_t {
 		DoubleFree,          // destroy() called on already-destroyed block
 		UseAfterFree,        // access to tombstoned or quarantined block
@@ -39,23 +33,48 @@ namespace Kerbecs {
 		MetadataCorruption,  // checksum or mirror mismatch in EnhancedMetaData
 		AlignmentViolation,  // construct<T>() ptr % alignof(T) != 0
 		SizeOverflow,        // blockSize<T>() multiplication overflowed
-		WildPointer,         // access to address not in AllocationRegistry
+		WildPointer,         // access to address not in any Region's AllocationRegistry
 		ThreadOwnership,      // destroy() called from wrong thread (Strict policy)
 		QuarantineSaturation,     // quarantine ring buffer is full - fail fast
 		RetiredBoundaryViolation,  // access to a Retiring block by a non-owner thread - fail fast
+		UndefinedWildPointerAccess, // live access lands inside an engine-owned region the caller was never given a handle to
+		EngineMemoryAccessViolation, // diagnostic escalation of UndefinedWildPointerAccess, gated by DiagnosticAccess policy
 		None
 	};
 
 	struct KERBECS_RUNTIME_API Violation {
-		ViolationKind m_Kind = ViolationKind::None;         // classification
+		ViolationKind m_Kind = ViolationKind::None;
 		const char* m_Name = nullptr;         // named allocation tag (string literal, not owned)
-		void* m_Address = nullptr;      // faulting address
-		void* m_BlockBase = nullptr;    // start of the allocation block
-		size_t        m_BlockSize{};    // total size of the allocation block
-		StackTrace    m_AllocSite{};    // call stack at allocation time
-		StackTrace    m_FreeSite{};     // call stack at free time (if applicable)
-		StackTrace    m_AccessSite{};   // call stack at violation detection site
+		void* m_Address = nullptr;
+		void* m_BlockBase = nullptr;
+		size_t        m_BlockSize{};
 		uint64_t      m_Timestamp{};    // __rdtsc() at detection time
-		uint32_t      m_ThreadID{};     // thread that triggered the violation
+		uint32_t      m_ThreadID{};
 	};
-} 
+
+	// Per-thread capacity of the violation stack (see pushViolation/popViolation
+	// below). Fixed, no heap allocation - a burst past this size evicts the
+	// oldest not-yet-popped entry rather than growing or blocking.
+	inline constexpr size_t VIOLATION_STACK_CAPACITY = 32;
+
+	namespace Internal {
+		// Called by every detection site; not part of the public query surface -
+		// callers drain through popViolation() below.
+		KERBECS_RUNTIME_API void pushViolation(const Violation& v_Violation) noexcept;
+	}
+
+	// Pops the most recently pushed, not-yet-popped Violation on the calling
+	// thread into r_Out (LIFO). Returns false and leaves r_Out untouched if this
+	// thread's stack is empty - drain it in a loop to walk the whole backlog.
+	KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard whether a violation was popped")
+		bool popViolation(Violation& r_Out) noexcept;
+
+	// Builds a Violation with its thread id/timestamp stamped, for every
+	// detection site to push via Internal::pushViolation - keeps that stamping
+	// logic (currentThreadID()/__rdtsc()) in one place instead of duplicated at
+	// every call site in Region.h/ShadowedMemory.h.
+	KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard constructed violation")
+		Violation makeViolation(ViolationKind v_Kind, void* p_Address, void* p_BlockBase, size_t v_BlockSize) noexcept;
+}

@@ -24,6 +24,8 @@
 
 #include "KerbecsEnforcements.h"
 
+// Swappable metadata-checksum accumulators (satisfying HashAccumulatorConcept for Region checksums).
+// Distinct from hardcoded Fibonacci/golden-ratio bucket hashes in AllocationRegistry and RegionRecord.
 namespace Kerbecs::Hash {
 
 	struct KERBECS_RUNTIME_API SplitMix64Hash {
@@ -96,4 +98,4 @@ namespace Kerbecs::Hash {
 	static_assert(Enforcement::HashAccumulatorConcept<Murmur3Mix64Hash>);
 	static_assert(Enforcement::HashAccumulatorConcept<WyHash64>);
 
-} 
+}

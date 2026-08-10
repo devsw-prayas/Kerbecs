@@ -24,31 +24,9 @@
 #include "KerbecsEnforcements.h"
 
 namespace Kerbecs::Shadow::Internal {
-	// MemorySupport<A>
-	//
-	// Non-owning pointer wrapper around a concrete allocator A (must satisfy
-	// AllocatorConcept). Stores A* rather than A by value - the pointed-to
-	// allocator is owned externally (typically as a member of KerbecsMemoryZone).
-	//
-	// Null checks are the caller's responsibility - ShadowPtr is expected to
-	// validate before use and fire the appropriate violation if m_Allocator
-	// is null.
-	//
-	// The key responsibility beyond simple forwarding is the static thunk:
-	//
-	//   static void thunk(void* alloc, void* block, size_t bytes)
-	//
-	// This is a type-erased free function. At shadowAllocate / endRetiring
-	// time - where the concrete A is still in scope - the caller stamps
-	// &MemorySupport<A>::thunk and passes it alongside a void* to this
-	// instance into QuarantineEntry. The quarantine calls the thunk at
-	// flush time without ever knowing A. This keeps the queue fully
-	// decoupled from all allocator types.
-	//
-	// MemorySupport instances for the three default allocators
-	// (ShadowzoneAllocator, StaticAllocator, GlobalAllocator) live as
-	// singleton members on KerbecsMemoryZone. ShadowPtr holds a MemorySupport<A>*
-	// pointing at the appropriate zone member.
+	// Non-owning pointer wrapper around concrete allocator A (stores A* owned externally).
+	// Provides static type-erased thunk(p_Alloc, p_Block, v_Bytes) stamped into QuarantineEntry,
+	// allowing QuarantineQueue to flush deferred deallocations without knowing template parameter A.
 	template<typename A>
 		requires Enforcement::AllocatorConcept<A>
 	struct KERBECS_RUNTIME_API MemorySupport final {

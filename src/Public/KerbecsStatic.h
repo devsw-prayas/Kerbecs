@@ -21,114 +21,92 @@
 
 #pragma once
 #include "Kerbecs.h"
+#include "KerbecsAllocators.h"
+#include "KerbecsRuntime.h"
 #include "MemoryLayouts.h"
-#include "ShadowPtr.h"
-#include "ShadowMap.h"
-#include "MemoryZone.h"
+#include "Region.h"
+#include "ShadowedMemory.h"
 
-namespace Kerbecs {
+// Static region support for KERBECS_PERSISTENT / KERBECS_GLOBAL macros.
+// Vends process-wide Region handles backed by KerbecsRuntime's m_StaticAllocatorImpl and m_GlobalAllocatorImpl.
+namespace Kerbecs::StaticSupport {
 
-    template<typename T, typename SM, typename LG, typename HA, typename AC, Shadow::Utils::ThreadPolicy TP = Shadow::Utils::ThreadPolicy::Flexible>
-    struct KERBECS_RUNTIME_API KerbecsDestructor {
-        Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* m_Handle = nullptr;
+	// Flexible ThreadPolicy: Static objects are process-lifetime singletons constructed/destroyed across static init/deinit.
+	using PersistentRegionT = StaticRegion<Allocators::StaticAllocator>;
+	using GlobalRegionT = StaticRegion<Allocators::GlobalAllocator>;
 
-        explicit KerbecsDestructor(
-            Shadow::ShadowPtr<Layout::StaticLayout, SM, LG, HA, AC, TP>* p_Handle) noexcept
-            : m_Handle(p_Handle) {
-        }
+	// Exported non-inline functions defined in KerbecsStatic.cpp ensure a single process-wide
+	// Region instance across DLLs/EXEs, preventing overlapping region registrations.
+	KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard persistent static region reference")
+		PersistentRegionT& persistentRegion() noexcept;
 
-        KerbecsDestructor(const KerbecsDestructor&) = delete;
-        KerbecsDestructor& operator=(const KerbecsDestructor&) = delete;
-        KerbecsDestructor(KerbecsDestructor&&) = delete;
-        KerbecsDestructor& operator=(KerbecsDestructor&&) = delete;
+	KERBECS_RUNTIME_API
+		KERBECS_NODISCARD_MSG("Cannot discard global static region reference")
+		GlobalRegionT& globalRegion() noexcept;
 
-        ~KerbecsDestructor() {
-            if (!m_Handle || !m_Handle->m_RawPtr) return;
-            Shadow::shadowDestroy<T, Layout::StaticLayout, SM, LG, HA, AC, TP>(m_Handle);
-        }
-    };
+	// RAII teardown for KERBECS_PERSISTENT/KERBECS_GLOBAL slots using bound RegionFn NTTP.
+	template<typename T, auto RegionFn>
+	struct KerbecsDestructor final {
+		ShadowedMemory<T>* m_Handle = nullptr;
+
+		explicit KerbecsDestructor(ShadowedMemory<T>* p_Handle) noexcept
+			: m_Handle(p_Handle) {
+		}
+
+		KerbecsDestructor(const KerbecsDestructor&) = delete;
+		KerbecsDestructor& operator=(const KerbecsDestructor&) = delete;
+		KerbecsDestructor(KerbecsDestructor&&) = delete;
+		KerbecsDestructor& operator=(KerbecsDestructor&&) = delete;
+
+		~KerbecsDestructor() {
+			if (!m_Handle || !static_cast<T*>(*m_Handle)) return;
+			KERBECS_UNUSED(RegionFn().destroy(*m_Handle));
+		}
+	};
 
 }
 
-#ifndef KERBECS_SHADOW_MAP_TYPE
-#error "KERBECS_SHADOW_MAP_TYPE must be defined before including KerbecsStatic.h"
-#endif
-
-#ifndef KERBECS_LOGGER_TYPE
-#error "KERBECS_LOGGER_TYPE must be defined before including KerbecsStatic.h"
-#endif
-
-#ifndef KERBECS_HASH_TYPE
-#error "KERBECS_HASH_TYPE must be defined before including KerbecsStatic.h"
-#endif
-
-#ifndef KERBECS_ALLOCATOR_TYPE
-#error "KERBECS_ALLOCATOR_TYPE must be defined before including KerbecsStatic.h"
-#endif
-
-// Full Shadow handle type - all five params.
-#define KERBECS_SHADOW_HANDLE_TYPE(Type)            \
-    ::Kerbecs::Shadow::ShadowPtr<                   \
-        ::Kerbecs::Layout::StaticLayout,            \
-        KERBECS_SHADOW_MAP_TYPE,                    \
-        KERBECS_LOGGER_TYPE,                        \
-        KERBECS_HASH_TYPE,                          \
-        KERBECS_ALLOCATOR_TYPE>                     \
+// Two-level indirection so __COUNTER__ expands to a number before ## pasting -
+// a single-level macro would paste the literal text "__COUNTER__" instead,
+// which only breaks the moment a second static appears in the same TU.
+#define KERBECS_CONCAT_IMPL(a, b) a##b
+#define KERBECS_CONCAT(a, b) KERBECS_CONCAT_IMPL(a, b)
 
 // KERBECS_STATIC_INIT_IMPL
 //
-// Internal implementation macro shared by KERBECS_PERSISTENT and
-// KERBECS_GLOBAL. AllocExpr is the expression that produces the block
-// pointer - callers pass the appropriate zone allocator member.
-#define KERBECS_STATIC_INIT_IMPL(Type, name, tag, allocMember, counter, ...)        \
-    struct _KerbecsInit_##counter {                                                  \
-        _KerbecsInit_##counter() {                                                   \
-            if (!::Kerbecs::MemoryZone::instance().m_Initialized)                   \
-                ::Kerbecs::MemoryZone::initShadowzone();                             \
-            constexpr size_t blockSz =                                               \
-                ::Kerbecs::Layout::StaticLayout::blockSize(                          \
-                    sizeof(Type), alignof(Type));                                    \
-            void* block =                                                            \
-                ::Kerbecs::MemoryZone::instance()                                    \
-                    .allocMember.allocate(blockSz, alignof(Type));                   \
-            KERBECS_ASSERT(block && "Zone exhausted");                               \
-			name.m_Map = KerbecsShadowMap{};                    \
-            name.m_Logger        = nullptr;                                          \
-            name.m_Name          = tag;                                              \
-            name.m_UserAllocator =                                                   \
-                &::Kerbecs::MemoryZone::instance().allocMember;                      \
-            bool ok = ::Kerbecs::Shadow::shadowInit<Type>(                           \
-                &name, block, blockSz, 1);                                           \
-            KERBECS_ASSERT(ok && "shadowInit failed");                               \
-            ok = ::Kerbecs::Shadow::shadowConstruct<Type>(&name, ##__VA_ARGS__);     \
-            KERBECS_ASSERT(ok && "shadowConstruct failed");                          \
+// region is the accessor function name (unqualified call target,
+// e.g. ::Kerbecs::StaticSupport::persistentRegion) - used both invoked
+// (region().allocate<Type>()/construct(...)) and bare, as the
+// KerbecsDestructor NTTP.
+#define KERBECS_STATIC_INIT_IMPL(Type, name, region, counter, ...)                  \
+    struct KERBECS_CONCAT(_KerbecsStaticInit_, counter) {                           \
+        KERBECS_CONCAT(_KerbecsStaticInit_, counter)() {                            \
+            name = region().allocate<Type>();                                       \
+            KERBECS_ASSERT(static_cast<Type*>(name) && "Kerbecs static region exhausted"); \
+            [[maybe_unused]] const bool ok = region().construct(name, ##__VA_ARGS__); \
+            KERBECS_ASSERT(ok && "Kerbecs static construct failed");                \
         }                                                                            \
     };                                                                               \
-    static _KerbecsInit_##counter _kerbecsInitInst_##counter;                       \
-    static ::Kerbecs::KerbecsDestructor<                                             \
-        Type,                                                                        \
-        KERBECS_SHADOW_MAP_TYPE,                                                     \
-        KERBECS_LOGGER_TYPE,                                                         \
-        KERBECS_HASH_TYPE,                                                           \
-        KERBECS_ALLOCATOR_TYPE> _kerbecsDestructor_##counter(&name)
+    static KERBECS_CONCAT(_KerbecsStaticInit_, counter) KERBECS_CONCAT(_kerbecsStaticInitInst_, counter); \
+    static ::Kerbecs::StaticSupport::KerbecsDestructor<Type, region>                \
+        KERBECS_CONCAT(_kerbecsStaticDestructInst_, counter)(&name)
 
 // KERBECS_PERSISTENT
 //
-// Allocates from m_StaticAllocator (StaticZone). Suitable for objects that
-// must persist for the lifetime of the process.
-#define KERBECS_PERSISTENT(Type, name, tag, ...)                    \
-    KERBECS_SHADOW_HANDLE_TYPE(Type) name;                          \
-    KERBECS_STATIC_INIT_IMPL(Type, name, tag, m_StaticAllocator,    \
-        __COUNTER__, ##__VA_ARGS__)
+// Allocates from the shared persistentRegion() (StaticZone-backed).
+// Suitable for objects that must persist for the lifetime of the process.
+#define KERBECS_PERSISTENT(Type, name, ...)                                         \
+    ::Kerbecs::ShadowedMemory<Type> name;                                           \
+    KERBECS_STATIC_INIT_IMPL(Type, name, ::Kerbecs::StaticSupport::persistentRegion, __COUNTER__, ##__VA_ARGS__)
 
-#define KERBECS_PERSISTENT_DECL(Type, name)                         \
-    extern KERBECS_SHADOW_HANDLE_TYPE(Type) name
+#define KERBECS_PERSISTENT_DECL(Type, name)                                         \
+    extern ::Kerbecs::ShadowedMemory<Type> name
 
 // KERBECS_GLOBAL
 //
-// Allocates from m_GlobalAllocator (GlobalZone). Suitable for module-level
-// singletons with controlled lifetime.
-#define KERBECS_GLOBAL(Type, name, tag, ...)                        \
-    static KERBECS_SHADOW_HANDLE_TYPE(Type) name;                   \
-    KERBECS_STATIC_INIT_IMPL(Type, name, tag, m_GlobalAllocator,    \
-        __COUNTER__, ##__VA_ARGS__)
+// Allocates from the shared globalRegion() (GlobalZone-backed). Suitable for
+// module-level singletons with controlled lifetime.
+#define KERBECS_GLOBAL(Type, name, ...)                                             \
+    static ::Kerbecs::ShadowedMemory<Type> name;                                    \
+    KERBECS_STATIC_INIT_IMPL(Type, name, ::Kerbecs::StaticSupport::globalRegion, __COUNTER__, ##__VA_ARGS__)
