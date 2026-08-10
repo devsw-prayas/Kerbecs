@@ -23,11 +23,6 @@
 #include "Kerbecs.h"
 
 namespace Kerbecs {
-	// TODO: alloc/free-site stack-trace capture. Deliberately not implemented
-	// yet - decide inline-per-node frames vs. an ASan-style interned "stack
-	// depot" (shared storage for repeated identical traces) before adding
-	// fields back to RegistryNode/Violation.
-
 	enum class KERBECS_RUNTIME_API ViolationKind : uint8_t {
 		DoubleFree,          // destroy() called on already-destroyed block
 		UseAfterFree,        // access to tombstoned or quarantined block
