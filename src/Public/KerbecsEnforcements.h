@@ -23,7 +23,7 @@
 #include "Kerbecs.h"
 #include "Violation.h"
 
-// No ShadowMapConcept (v0.2 SS6 - shadow map concept removed entirely;
+// No ShadowMapConcept (shadow map concept removed entirely;
 // poison/unpoison/toShadow are free functions over a blob + range).
 
 namespace Kerbecs::Enforcement {

@@ -48,16 +48,14 @@ namespace Kerbecs::Runtime {
 	bool teardownShadowzone() noexcept {
 		auto& zone = instance();
 
-		if (zone.m_Shutdown.load(std::memory_order_acquire))
+		bool expected = false;
+		if (!zone.m_Shutdown.compare_exchange_strong(
+			expected, true, std::memory_order_acq_rel, std::memory_order_acquire))
 			return false;
 
-		// Ensure any nodes in the Retiring state have their dtors finished
-		// before shutdown proceeds. (Per-Region leak auditing is no longer
-		// done here - v0.2 SS7.1 moves AllocationRegistry ownership to each
-		// Region, and the runtime has no way to see into registries it
-		// doesn't own. A Region should audit its own liveCount() in its own
-		// destructor instead.)
-		zone.m_Epoch.fetch_add(4, std::memory_order_acq_rel);
+		zone.m_DrainRunning.store(false, std::memory_order_release);
+		if (zone.m_DrainThread.joinable())
+			zone.m_DrainThread.join();
 
 		zone.m_Quarantine.flushEligible(SIZE_MAX, true);
 		zone.m_Quarantine.shutdown();
@@ -79,7 +77,6 @@ namespace Kerbecs::Runtime {
 		zone.m_MetadataZone = nullptr;
 
 		zone.m_Initialized.store(false, std::memory_order_release);
-		zone.m_Shutdown.store(true, std::memory_order_release);
 
 		return true;
 	}
@@ -106,7 +103,6 @@ namespace Kerbecs::Runtime {
 		constexpr size_t totalBytes =
 			shadowBytes + globalBytes + staticBytes + metadataBytes;
 
-		// Reserve entire VA block in one call - no commit.
 		m_MemoryZone = Memory::reserveAt(
 			std::bit_cast<void*>(MEMORY_ZONE_ADDRESS),
 			totalBytes);
@@ -126,7 +122,6 @@ namespace Kerbecs::Runtime {
 		m_StaticAllocatorImpl.init(m_StaticZone, staticBytes);
 		m_MetadataZoneAllocatorImpl.init(m_MetadataZone, metadataBytes);
 
-		// Point the MemorySupport wrappers at the concrete allocator members.
 		m_ShadowzoneAllocator = Shadow::Internal::MemorySupport<Allocators::ShadowzoneAllocator>{ &m_ShadowzoneAllocatorImpl };
 		m_StaticAllocator = Shadow::Internal::MemorySupport<Allocators::StaticAllocator>{ &m_StaticAllocatorImpl };
 		m_GlobalAllocator = Shadow::Internal::MemorySupport<Allocators::GlobalAllocator>{ &m_GlobalAllocatorImpl };
@@ -148,7 +143,22 @@ namespace Kerbecs::Runtime {
 
 		m_Shutdown.store(false, std::memory_order_relaxed);
 		m_Initialized.store(true, std::memory_order_release);
+
+		m_DrainRunning.store(true, std::memory_order_relaxed);
+		m_DrainThread = std::thread(&KerbecsRuntime::_drainLoop, this);
+
 		return true;
+	}
+
+	void KerbecsRuntime::_drainLoop() noexcept {
+		while (m_DrainRunning.load(std::memory_order_relaxed)) {
+			std::this_thread::sleep_for(DRAIN_INTERVAL);
+			if (!m_DrainRunning.load(std::memory_order_relaxed))
+				break;
+
+			m_Epoch.fetch_add(1, std::memory_order_acq_rel);
+			m_Quarantine.flushEligible(SIZE_MAX, false);
+		}
 	}
 
 	void* KerbecsRuntime::shadowzoneAllocate(size_t v_Bytes) noexcept {
@@ -169,122 +179,5 @@ namespace Kerbecs::Runtime {
 			p_Region, p_ShadowMapBase, p_MetadataMapBase, p_RegionBase, v_Size);
 	}
 
-	void* mapToShadow(void* p_User, size_t v_Size) noexcept {
-		if (!p_User || v_Size == 0)
-			return nullptr;
-
-		auto& zone = instance();
-
-		if (!zone.m_Initialized.load(std::memory_order_acquire) ||
-			!zone.m_ShadowZone || !zone.m_MemoryZone)
-			return nullptr;
-
-		const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_User);
-		const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
-
-		if (userStart < zoneBase)
-			return nullptr;
-
-		const uintptr_t relativeOffset = userStart - zoneBase;
-		const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
-		const uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
-
-		const uintptr_t shadowStart = (relativeOffset >> SHADOW_SCALE) + shadowBase;
-
-		if (shadowStart < shadowBase || shadowStart >= shadowZoneEnd)
-			return nullptr;
-
-		return reinterpret_cast<void*>(shadowStart);
-	}
-
-	UserRange mapToUser(void* p_Shadow) noexcept {
-		if (!p_Shadow)
-			return { nullptr, nullptr };
-
-		auto& zone = instance();
-
-		if (!zone.m_Initialized.load(std::memory_order_acquire) ||
-			!zone.m_ShadowZone || !zone.m_MemoryZone)
-			return { nullptr, nullptr };
-
-		const uintptr_t shadowAddr = reinterpret_cast<uintptr_t>(p_Shadow);
-		const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
-		const uintptr_t shadowZoneEnd = reinterpret_cast<uintptr_t>(zone.m_GlobalZone);
-
-		if (shadowAddr < shadowBase || shadowAddr >= shadowZoneEnd)
-			return { nullptr, nullptr };
-
-		const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
-		const uintptr_t relativeOffset = (shadowAddr - shadowBase) << SHADOW_SCALE;
-		const uintptr_t userBase = relativeOffset + zoneBase;
-		const uintptr_t userEnd = userBase + ((1ULL << SHADOW_SCALE) - 1);
-
-		return {
-			reinterpret_cast<void*>(userBase),
-			reinterpret_cast<void*>(userEnd)
-		};
-	}
-
-	bool shadowPoison(void* p_UserPtr, size_t v_Size) noexcept {
-		if (!p_UserPtr || v_Size == 0) return false;
-
-		auto& zone = instance();
-		const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_UserPtr);
-		const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
-		const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
-
-		uintptr_t addr = userStart;
-		size_t remaining = v_Size;
-
-		while (remaining > 0) {
-			const uintptr_t rel = addr - zoneBase;
-			const uintptr_t shadowByteAddr = (rel >> SHADOW_SCALE) + shadowBase;
-			uint8_t* shadowByte = reinterpret_cast<uint8_t*>(shadowByteAddr);
-
-			if (!Memory::commitPageIfNeeded(shadowByte)) return false;
-
-			size_t bitOffset = addr & 0x7;
-			size_t span = std::min<size_t>(remaining, 8 - bitOffset);
-
-			for (size_t i = 0; i < span; ++i) {
-				*shadowByte |= static_cast<uint8_t>(1u << (bitOffset + i));
-			}
-
-			addr += span;
-			remaining -= span;
-		}
-		return true;
-	}
-
-	bool shadowUnpoison(void* p_UserPtr, size_t v_Size) noexcept {
-		if (!p_UserPtr || v_Size == 0) return false;
-
-		auto& zone = instance();
-		const uintptr_t userStart = reinterpret_cast<uintptr_t>(p_UserPtr);
-		const uintptr_t zoneBase = reinterpret_cast<uintptr_t>(zone.m_MemoryZone);
-		const uintptr_t shadowBase = reinterpret_cast<uintptr_t>(zone.m_ShadowZone);
-
-		uintptr_t addr = userStart;
-		size_t remaining = v_Size;
-
-		while (remaining > 0) {
-			const uintptr_t rel = addr - zoneBase;
-			const uintptr_t shadowByteAddr = (rel >> SHADOW_SCALE) + shadowBase;
-			uint8_t* shadowByte = reinterpret_cast<uint8_t*>(shadowByteAddr);
-
-			const size_t bitOffset = addr & 0x7;
-			const size_t span = std::min<size_t>(remaining, 8 - bitOffset);
-
-			// Uncommitted pages are implicitly zeroed/unpoisoned.
-			if (Memory::queryPage(shadowByte) == Memory::PageState::Committed) {
-				for (size_t i = 0; i < span; ++i)
-					*shadowByte &= ~static_cast<uint8_t>(1u << (bitOffset + i));
-			}
-
-			addr += span;
-			remaining -= span;
-		}
-		return true;
-	}
-
 }
+

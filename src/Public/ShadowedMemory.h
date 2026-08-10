@@ -26,7 +26,7 @@
 #include "ShadowUtils.h"
 #include "Violation.h"
 
-// ShadowedMemory<T> (v0.2 SS3) - replaces ShadowToken's lazy-resolve model.
+// ShadowedMemory<T> - replaces ShadowToken's lazy-resolve model.
 // Resolves once, at allocation time, and stays immutable for its entire
 // lifetime - no zone ID / generation / slot-index decode on every access.
 //
@@ -35,7 +35,6 @@
 // policy now lives on Region, which is the thing that resolves and vends
 // these handles. ShadowedMemory<T> itself only ever needs to know T.
 namespace Kerbecs {
-
 	template<typename LayoutT, Shadow::Utils::ThreadPolicy ThreadPolicyT, typename AllocatorT>
 		requires Enforcement::LayoutPolicyConcept<LayoutT> && Enforcement::AllocatorConcept<AllocatorT>
 	class Region; // forward declaration only - Region.h is the sole friend allowed to construct a real handle.
@@ -43,7 +42,7 @@ namespace Kerbecs {
 	template<typename T> class ShadowedMemory;
 
 	// Forward declaration only, so ShadowedMemory<T> can friend it below -
-	// definition stays after the class (v0.2 SS6).
+	// definition stays after the class.
 	template<typename T>
 	KERBECS_NODISCARD_MSG("Cannot discard shadow state")
 		Shadow::Utils::MemoryState shadowStateOf(const ShadowedMemory<T>& v_Handle, size_t v_Size) noexcept;
@@ -53,7 +52,7 @@ namespace Kerbecs {
 	public:
 		// All-zero state, equivalent to T* p; / T* p = nullptr;. Both public
 		// constructors are bit-identical - there is no softer "safer" null
-		// state than a raw null pointer (v0.2 SS3.2).
+		// state than a raw null pointer.
 		ShadowedMemory() noexcept = default;
 		ShadowedMemory(std::nullptr_t) noexcept {}
 
@@ -67,8 +66,6 @@ namespace Kerbecs {
 		ShadowedMemory(ShadowedMemory&&) noexcept = default;
 		ShadowedMemory& operator=(ShadowedMemory&&) noexcept = default;
 		~ShadowedMemory() = default;
-
-		// Raw-pointer operator parity (v0.2 SS3.4).
 
 		KERBECS_NODISCARD_MSG("Cannot discard dereferenced reference")
 			T& operator*() const noexcept {
@@ -84,16 +81,14 @@ namespace Kerbecs {
 
 		// Deliberately non-explicit - a known, accepted footgun. Anyone
 		// writing `T* raw = shadowedMem;` in this codebase is presumed to
-		// know exactly what that line costs (v0.2 SS3.4).
+		// know exactly what that line costs.
 		operator T* () const noexcept {
 			_check();
 			return static_cast<T*>(m_PayloadPtr);
 		}
 
-		// Compares payload AND generation together - two handles at the same
-		// address from different allocation epochs are NOT equal. Stronger,
-		// more correct semantics than raw-pointer address-only equality,
-		// stated explicitly as a deliberate departure (v0.2 SS3.4).
+		// Compares payload AND generation together - handles at the same address from
+		// different allocation epochs are NOT equal.
 		friend bool operator==(const ShadowedMemory& v_Lhs, const ShadowedMemory& v_Rhs) noexcept {
 			return v_Lhs.m_PayloadPtr == v_Rhs.m_PayloadPtr && v_Lhs.m_Generation == v_Rhs.m_Generation;
 		}
@@ -101,12 +96,6 @@ namespace Kerbecs {
 			return !(v_Lhs == v_Rhs);
 		}
 
-		// Range-checks the resulting offset against the payload size read
-		// through m_MetaPtr (Runtime::AccessInfo::m_UserSize - metadata sits
-		// beside payload, typically a same/adjacent cache-line hit). Fires
-		// BufferOverflow on violation; otherwise returns a new
-		// ShadowedMemory<T> with m_PayloadPtr advanced and the other three
-		// fields carried over unchanged (v0.2 SS3.4).
 		KERBECS_NODISCARD_MSG("Cannot discard offset handle")
 			ShadowedMemory operator+(ptrdiff_t v_Index) const noexcept {
 			if (!m_PayloadPtr || !m_MetaPtr)
@@ -116,20 +105,15 @@ namespace Kerbecs {
 			const ptrdiff_t byteOffset = v_Index * static_cast<ptrdiff_t>(sizeof(T));
 			const ptrdiff_t newOffsetEnd = byteOffset + static_cast<ptrdiff_t>(sizeof(T));
 
-			if (newOffsetEnd < 0 || static_cast<size_t>(newOffsetEnd) > info->m_UserSize) {
+			if (newOffsetEnd < 0 || byteOffset < 0 || static_cast<size_t>(newOffsetEnd) > info->m_UserSize) {
 				Violation v{};
 				v.m_Kind = ViolationKind::BufferOverflow;
 				v.m_Address = static_cast<std::byte*>(m_PayloadPtr) + byteOffset;
 				v.m_BlockBase = m_PayloadPtr;
 				v.m_BlockSize = info->m_UserSize;
 				statsOnViolation(&Runtime::instance().m_Stats);
-				// No logger reference on ShadowedMemory<T> by design - the
-				// caller's installed sink is reached through Region, which
-				// is the layer that actually owns policy. A bounds violation
-				// discovered mid-arithmetic here still needs to be visible,
-				// so it goes through the same global stats counter every
-				// other violation touches; Region-level callers additionally
-				// re-check bounds through their own Logger-aware path.
+				// Mid-arithmetic bounds violations update global stats since ShadowedMemory<T> has
+				// no Logger reference; Region callers re-check via their Logger-aware path.
 				return ShadowedMemory{};
 			}
 
@@ -140,63 +124,49 @@ namespace Kerbecs {
 				m_Generation);
 		}
 
-		// operator& explicitly absent (v0.2 SS3.4) - the use case (short-
-		// lived, stack-resident, immutable, never stored persistently) never
-		// needs the address of the handle itself. &*sm remains the idiom for
-		// obtaining a raw T* to the payload, mirroring &*it for iterators.
+		// operator& explicitly absent - short-lived stack handles never need their own address;
+		// use &*sm for raw T* payload pointer.
 
 	private:
 		template<typename LayoutT, Shadow::Utils::ThreadPolicy ThreadPolicyT, typename AllocatorT>
 			requires Enforcement::LayoutPolicyConcept<LayoutT> && Enforcement::AllocatorConcept<AllocatorT>
 		friend class Region;
 
-		// shadowStateOf reads m_PayloadPtr directly (bypassing _check()) - it
-		// is a diagnostic/introspection read meant to work on handles whose
-		// generation has already been invalidated by Region::destroy, not a
-		// live dereference, so the use-after-free trap in _check() must not
-		// fire here (v0.2 SS6).
+		// shadowStateOf reads m_PayloadPtr directly without _check() - introspection must work
+		// on handles whose generation was invalidated by Region::destroy.
 		template<typename U>
 		friend Shadow::Utils::MemoryState shadowStateOf(const ShadowedMemory<U>& v_Handle, size_t v_Size) noexcept;
 
-		// Friend-only, reachable only by Region's allocation path (v0.2 SS3.2).
+		// Friend-only, reachable only by Region's allocation path.
 		ShadowedMemory(void* p_MetaPtr, void* p_PayloadPtr, void* p_ShadowPtr, uint64_t v_Generation) noexcept
-			: m_MetaPtr(p_MetaPtr), m_PayloadPtr(p_PayloadPtr), m_ShadowPtr(p_ShadowPtr), m_Generation(v_Generation) {
-		}
+			: m_MetaPtr(p_MetaPtr), m_PayloadPtr(p_PayloadPtr), m_ShadowPtr(p_ShadowPtr), m_Generation(v_Generation) {}
 
-		// Generation + poison-byte check before every dereference. O(1) - no
-		// registry lookup: m_Generation is compared directly against the
-		// live copy already sitting in Runtime::AccessInfo at m_MetaPtr
-		// (v0.2 SS3.3, "resolve once" - the whole point is that this stays
-		// a flat read, not a decode+index+check).
+		// O(1) dereference check: compares snapshot m_Generation directly against
+		// Runtime::AccessInfo in m_MetaPtr, avoiding registry lookups.
 		void _check() const noexcept {
 			if (!m_PayloadPtr || !m_MetaPtr) return;
 
 			const auto* info = static_cast<const Runtime::AccessInfo*>(m_MetaPtr);
-			if (info->m_Generation != m_Generation) {
+			if (info->m_Generation.load(std::memory_order_acquire) != m_Generation) {
 				statsOnViolation(&Runtime::instance().m_Stats);
 				KERBECS_TRAP();
 			}
 		}
 
-		void*    m_MetaPtr = nullptr;    // resolved metadata/access-info slot (Runtime::AccessInfo)
-		void*    m_PayloadPtr = nullptr; // resolved payload start
-		void*    m_ShadowPtr = nullptr;  // pre-resolved shadow-bitmap address
+		void* m_MetaPtr = nullptr;    // resolved metadata/access-info slot (Runtime::AccessInfo)
+		void* m_PayloadPtr = nullptr; // resolved payload start
+		void* m_ShadowPtr = nullptr;  // pre-resolved shadow-bitmap address
 		uint64_t m_Generation = 0;       // snapshot of the owning slot's generation at construction time
 	};
 
 	// shadowStateOf (replaces v0.1's Shadow::shadowStateOf + KerbecsShadowMap)
 	//
 	// Reads MemoryState directly off block bytes - no shadow-map concept, no
-	// injected map instance (v0.2 SS6). Poison bytes are scanned in place,
+	// injected map instance. Poison bytes are scanned in place,
 	// same approach the shadow-map-removal commit already established for
 	// ShadowPtr before this rewrite began.
 	template<typename T>
 	Shadow::Utils::MemoryState shadowStateOf(const ShadowedMemory<T>& v_Handle, size_t v_Size) noexcept {
-		// Reads m_PayloadPtr directly, not through operator T*()/_check() -
-		// this is a post-mortem introspection read that must work on handles
-		// whose generation was already invalidated by Region::destroy (that's
-		// the DESTROYED case below), so it must not trip the use-after-free
-		// trap that a live dereference would.
 		T* payload = static_cast<T*>(v_Handle.m_PayloadPtr);
 		if (!payload)
 			return Shadow::Utils::MemoryState::CORRUPTED;

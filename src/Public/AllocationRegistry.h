@@ -36,18 +36,11 @@ namespace Kerbecs::Tracing {
 		size_t                  m_Capacity = 0;
 	};
 
-	// AllocationRegistry - now owned one-per-Region (v0.2 SS7.1), rather than
-	// three fixed zones sharing a single instance. Node capacity is a
-	// constructor-time parameter instead of a hardcoded constant, so a small
-	// Region isn't forced to carry a pool sized for a large one. This is what
-	// makes the two-tier wild-pointer resolution (RegionRecord, v0.2 SS5)
-	// cheap: rejecting a genuinely wild address only costs a lookup against
-	// the small Region Registry, never this registry's node pool.
-	//
-	// Striped concurrent hash map: 2048 buckets, intrusive node pool.
-	// Reads are lock-free; inserts acquire per-bucket SpinLock + CAS prepend.
-	// State transitions always go through CAS (acq_rel/acquire). Never plain store.
-	// Dtor cycle serialised by per-node m_DtorLock via beginRetiring/endRetiring.
+	// Striped concurrent hash map (2048 buckets, intrusive node pool) owned one-per-Region.
+	// Configurable capacity avoids sizing small regions for large pools, making
+	// two-tier wild-pointer resolution (RegionRecord) cheap by rejecting wild pointers
+	// before searching node pools. Reads are lock-free; inserts acquire per-bucket SpinLock + CAS.
+	// State transitions use CAS; dtor cycle serialised via per-node m_DtorLock.
 	class KERBECS_RUNTIME_API AllocationRegistry {
 	public:
 		explicit AllocationRegistry(size_t v_NodeCapacity) noexcept

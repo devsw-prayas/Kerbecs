@@ -77,13 +77,22 @@ namespace Kerbecs::Quarantine {
 
 		const size_t mask = m_Capacity - 1;
 		const size_t tail = m_Tail.fetch_add(1, std::memory_order_acq_rel);
-		const size_t idx = tail & mask;
 
-		QuarantineEntry& slot = m_Slots[idx];
-
-		void* existing = slot.m_BlockBase.load(std::memory_order_acquire);
-		if (existing != nullptr)
+		// Saturation is decided by occupancy (tail - head), not by peeking at the
+		// claimed slot's own content - two fetch_adds exactly m_Capacity apart can
+		// land on the same index, and if the earlier one hasn't published its
+		// m_BlockBase yet, a content check alone would pass and both threads would
+		// write the slot's non-atomic fields concurrently. The acquire load of
+		// m_Head here synchronizes with flushEligible's release fetch_add on
+		// m_Head, which happens strictly after that slot's previous occupant was
+		// already nulled out - so once this check passes, the slot is provably free.
+		const size_t head = m_Head.load(std::memory_order_acquire);
+		if (tail - head >= m_Capacity)
 			_onSaturation();
+
+		const size_t idx = tail & mask;
+		QuarantineEntry& slot = m_Slots[idx];
+		KERBECS_ASSERT(slot.m_BlockBase.load(std::memory_order_relaxed) == nullptr);
 
 		slot.m_BlockSize = v_BlockSize;
 		slot.m_Epoch = v_Epoch;
@@ -121,7 +130,6 @@ namespace Kerbecs::Quarantine {
 			if (!base)
 				break;
 
-			// Bypass epoch check if force-flushing (used at teardown).
 			if (!v_Force) {
 				const uint64_t curEpoch = Runtime::instance().m_Epoch.load(std::memory_order_acquire);
 				if (slot.m_Epoch + 2 > curEpoch)

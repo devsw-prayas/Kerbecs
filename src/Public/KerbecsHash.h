@@ -24,14 +24,8 @@
 
 #include "KerbecsEnforcements.h"
 
-// Metadata-checksum hash accumulators (the H template parameter wherever a
-// HashAccumulatorConcept is required - Region's metadata checksums, etc).
-//
-// Not to be confused with the Fibonacci/golden-ratio bucket hash used by
-// AllocationRegistry::_index and the RegionRecord lookup table (v0.2 SS5.2) -
-// that scheme is address-bucket hashing, hardcoded per-class where it's used,
-// not a swappable accumulator.
-
+// Swappable metadata-checksum accumulators (satisfying HashAccumulatorConcept for Region checksums).
+// Distinct from hardcoded Fibonacci/golden-ratio bucket hashes in AllocationRegistry and RegionRecord.
 namespace Kerbecs::Hash {
 
 	struct KERBECS_RUNTIME_API SplitMix64Hash {

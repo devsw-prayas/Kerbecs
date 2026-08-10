@@ -77,7 +77,6 @@ namespace Kerbecs::Checksums {
 		p_Leading->m_ThreadHash = threadHash;
 		p_Leading->m_Checksum = checksum;
 
-		// Mirror into trailing
 		*p_Trailing = *p_Leading;
 
 		return true;
@@ -87,15 +86,13 @@ namespace Kerbecs::Checksums {
 	inline bool initNormalMetadata(
 		Runtime::NormalMetaData* p_Meta,
 		size_t                      v_TotalSize,
-		uint64_t                    v_AllocatorID,
-		uint64_t                    v_Generation = 0) noexcept {
+		uint64_t                    v_AllocatorID) noexcept {
 		if (!p_Meta) return false;
 
 		p_Meta->m_TotalSize = v_TotalSize;
 		p_Meta->m_TotalCommitted = v_TotalSize;
 		p_Meta->m_TotalPoisoned = v_TotalSize;
 		p_Meta->m_AllocatorHash = v_AllocatorID;
-		p_Meta->m_Generation = v_Generation;
 
 		return true;
 	}
@@ -113,15 +110,12 @@ namespace Kerbecs::Checksums {
 		Shadow::Utils::ThreadPolicy                  v_Policy) noexcept {
 		if (!p_Hasher || !p_Leading || !p_Trailing) return false;
 
-		// 1. Size check
 		if (p_Leading->m_TotalSize != v_ExpectedTotalSize)
 			return false;
 
-		// 2. Allocator check
 		if (p_Leading->m_AllocatorHash != v_ExpectedAllocatorID)
 			return false;
 
-		// 3. Thread check
 		if (v_Policy == Shadow::Utils::ThreadPolicy::Strict) {
 			if (p_Leading->m_ThreadHash != v_ExpectedThreadID)
 				return false;

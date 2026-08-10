@@ -1,28 +1,27 @@
 /*
-* Copyright (c) 2025 StormWeaver
-*
-* This file is part of the Kerbecs Address Sanitizer API
-*
-* Licensed under the MIT License. You may obtain a copy of the License at
-* https://opensource.org/licenses/MIT
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in all
-* copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...
-*/
+ * Copyright (c) 2025 StormWeaver
+ *
+ * This file is part of the Kerbecs Address Sanitizer API
+ *
+ * Licensed under the MIT License. You may obtain a copy of the License at
+ * https://opensource.org/licenses/MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...
+ */
 
 #pragma once
 #include "Kerbecs.h"
 #include "KerbecsDiagnostics.h"
-#include "KerbecsMemory.h"
 #include "KerbecsEnforcements.h"
 
 namespace Kerbecs::Allocators {
@@ -39,120 +38,54 @@ namespace Kerbecs::Allocators {
 		BumpAllocatorBase& operator=(BumpAllocatorBase&&) noexcept = delete;
 		~BumpAllocatorBase() = default;
 
-		void init(void* p_Base, size_t v_Size) noexcept {
-			m_Base = static_cast<uint8_t*>(p_Base);
-			m_Size = v_Size;
-			m_Bump.store(0, std::memory_order_relaxed);
-		}
+		void init(void* p_Base, size_t v_Size) noexcept;
 
 		KERBECS_NODISCARD_MSG("Cannot discard allocated block pointer")
-			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
-			uint8_t* ptr = _bumpReserve(v_Bytes, v_Align);
-			if (!ptr) return nullptr;
+			void* allocate(size_t v_Bytes, size_t v_Align) noexcept;
 
-			// commitPageIfNeeded is idempotent on both platforms — racing commits are safe.
-			uintptr_t firstPage = reinterpret_cast<uintptr_t>(ptr)
-				& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
-			uintptr_t lastPage = reinterpret_cast<uintptr_t>(ptr + v_Bytes - 1)
-				& ~static_cast<uintptr_t>(Memory::PAGE_SIZE - 1);
-
-			for (uintptr_t page = firstPage; page <= lastPage; page += Memory::PAGE_SIZE)
-				KERBECS_UNUSED(Memory::commitPageIfNeeded(reinterpret_cast<void*>(page)));
-
-			return ptr;
-		}
-
-		void deallocate(void* /*p_Block*/, size_t /*v_Bytes*/) noexcept {}
+		void deallocate(void* /*p_Block*/, size_t /*v_Bytes*/) noexcept;
 
 	protected:
-		// Bumps the VA cursor and returns a reserved-but-uncommitted pointer -
-		// no commit loop. Callers that hand out huge, sparsely-touched blocks
-		// (e.g. ShadowzoneAllocator's shadow blob, which spans the whole zone
-		// it shadows) must not eagerly commit every page: that turns a single
-		// allocation into millions of VirtualAlloc(MEM_COMMIT) calls and
-		// physically commits the entire block up front. Those callers rely on
-		// the existing lazy commitPageIfNeeded() calls in Region::_setShadow
-		// (and KerbecsRuntime's shadow-write paths) to commit only the pages
-		// actually touched.
+		// Bumps VA cursor without page commits. Sparsely-touched callers (e.g.
+		// ShadowzoneAllocator) rely on lazy commitPageIfNeeded in Region::_setShadow
+		// rather than eager per-page loops that cause huge front VirtualAlloc commits.
 		KERBECS_NODISCARD_MSG("Cannot discard reserved block pointer")
-			uint8_t* _bumpReserve(size_t v_Bytes, size_t v_Align) noexcept {
-			if (!m_Base || v_Bytes == 0 || v_Align == 0) return nullptr;
-
-			KERBECS_ASSERT((v_Align & (v_Align - 1)) == 0);
-
-			size_t current = m_Bump.load(std::memory_order_relaxed);
-
-			for (;;) {
-				size_t aligned = Memory::alignUp(current, v_Align);
-				size_t next = aligned + v_Bytes;
-
-				if (next > m_Size) return nullptr;
-
-				if (m_Bump.compare_exchange_weak(
-					current,
-					next,
-					std::memory_order_release,
-					std::memory_order_relaxed)) {
-					return m_Base + aligned;
-				}
-			}
-		}
+			uint8_t* _bumpReserve(size_t v_Bytes, size_t v_Align) noexcept;
 	};
 
 	struct KERBECS_RUNTIME_API ShadowzoneAllocator final : BumpAllocatorBase {
-		// Shadow blobs span an entire zone's worth of shadow bits (up to
-		// SHADOWZONE_SIZE / 8) but are only ever touched sparsely, one shadow
-		// byte at a time, via Region::_setShadow's commitPageIfNeeded calls.
-		// Reserve the VA range and leave every page uncommitted here - eagerly
-		// committing (BumpAllocatorBase::allocate's per-page loop) would
-		// physically commit the whole blob on first use.
+		// Deliberately skips BumpAllocatorBase::allocate's eager per-page commit -
+		// this blob spans the whole zone but is only ever touched one shadow byte
+		// at a time (Region::_setShadow), so eager-committing here is what caused
+		// the 125GB-reservation bug this class was fixed for (see 3f0a41b).
 		KERBECS_NODISCARD_MSG("Cannot discard allocated shadow block pointer")
-			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
-			return _bumpReserve(v_Bytes, v_Align);
-		}
+			void* allocate(size_t v_Bytes, size_t v_Align) noexcept;
 
-		void deallocate(void* p_Block, size_t v_Bytes) noexcept {
-			BumpAllocatorBase::deallocate(p_Block, v_Bytes);
-		}
+		void deallocate(void* p_Block, size_t v_Bytes) noexcept;
 	};
 
 	struct KERBECS_RUNTIME_API StaticAllocator final : BumpAllocatorBase {
 		KERBECS_NODISCARD_MSG("Cannot discard allocated static block pointer")
-			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
-			return BumpAllocatorBase::allocate(v_Bytes, v_Align);
-		}
+			void* allocate(size_t v_Bytes, size_t v_Align) noexcept;
 
-		void deallocate(void* p_Block, size_t v_Bytes) noexcept {
-			BumpAllocatorBase::deallocate(p_Block, v_Bytes);
-		}
+		void deallocate(void* p_Block, size_t v_Bytes) noexcept;
 	};
 
 	struct KERBECS_RUNTIME_API GlobalAllocator final : BumpAllocatorBase {
 		KERBECS_NODISCARD_MSG("Cannot discard allocated global block pointer")
-			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
-			return BumpAllocatorBase::allocate(v_Bytes, v_Align);
-		}
+			void* allocate(size_t v_Bytes, size_t v_Align) noexcept;
 
-		void deallocate(void* p_Block, size_t v_Bytes) noexcept {
-			BumpAllocatorBase::deallocate(p_Block, v_Bytes);
-		}
+		void deallocate(void* p_Block, size_t v_Bytes) noexcept;
 	};
 
-	// MetadataZoneAllocator (v0.2 SS4.1 / SS8)
-	//
-	// Backs Region::m_MetadataMapBase. Per-allocation metadata/guard regions
-	// stamped here get their own poison bits (v0.2 SS8.1) - previously the
-	// shadow bitmap only ever covered user payload, leaving metadata/guard
-	// blocks invisible to wild-pointer checks.
+	// MetadataZoneAllocator: Backs Region::m_MetadataMapBase.
+	// Metadata/guard regions stamped here get dedicated poison bits,
+	// allowing wild-pointer checks to catch out-of-bounds hits into metadata.
 	struct KERBECS_RUNTIME_API MetadataZoneAllocator final : BumpAllocatorBase {
 		KERBECS_NODISCARD_MSG("Cannot discard allocated metadata block pointer")
-			void* allocate(size_t v_Bytes, size_t v_Align) noexcept {
-			return BumpAllocatorBase::allocate(v_Bytes, v_Align);
-		}
+			void* allocate(size_t v_Bytes, size_t v_Align) noexcept;
 
-		void deallocate(void* p_Block, size_t v_Bytes) noexcept {
-			BumpAllocatorBase::deallocate(p_Block, v_Bytes);
-		}
+		void deallocate(void* p_Block, size_t v_Bytes) noexcept;
 	};
 
 	KERBECS_STATIC_ASSERT(Enforcement::AllocatorConcept<ShadowzoneAllocator>, "Concept not satisfied");

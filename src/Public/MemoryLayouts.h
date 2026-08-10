@@ -126,22 +126,15 @@ namespace Kerbecs::Layout {
 
 		KERBECS_NODISCARD_MSG("Cannot discard computed block size")
 			static size_t blockSize(size_t v_PayloadSize, size_t v_Align) noexcept {
-			// leading redzone
 			size_t cursor = Runtime::REDZONE_SIZE;
-			// leading metadata (aligned)
 			cursor = Memory::alignUp(cursor, alignof(Runtime::EnhancedMetaData));
 			cursor += sizeof(Runtime::EnhancedMetaData);
-			// leading canary
 			cursor += Runtime::CANARY_SIZE;
-			// user payload (aligned)
 			cursor = Memory::alignUp(cursor, v_Align);
 			cursor += v_PayloadSize;
-			// trailing canary
 			cursor += Runtime::CANARY_SIZE;
-			// trailing metadata (aligned)
 			cursor = Memory::alignUp(cursor, alignof(Runtime::EnhancedMetaData));
 			cursor += sizeof(Runtime::EnhancedMetaData);
-			// trailing redzone
 			cursor += Runtime::REDZONE_SIZE;
 			return cursor;
 		}
@@ -245,12 +238,12 @@ namespace Kerbecs::Layout {
 
 		KERBECS_NODISCARD_MSG("Cannot discard computed block size")
 			static size_t blockSize(size_t v_PayloadSize, size_t v_Align) noexcept {
-			size_t cursor = Runtime::REDZONE_SIZE;              // leading redzone
-			cursor += Runtime::CANARY_SIZE;                     // leading canary
-			cursor = Memory::alignUp(cursor, v_Align);            // align for payload
-			cursor += v_PayloadSize;                               // payload
-			cursor += Runtime::CANARY_SIZE;                     // trailing canary
-			cursor += Runtime::REDZONE_SIZE;                    // trailing redzone
+			size_t cursor = Runtime::REDZONE_SIZE;
+			cursor += Runtime::CANARY_SIZE;
+			cursor = Memory::alignUp(cursor, v_Align);
+			cursor += v_PayloadSize;
+			cursor += Runtime::CANARY_SIZE;
+			cursor += Runtime::REDZONE_SIZE;
 			return cursor;
 		}
 

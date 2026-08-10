@@ -30,22 +30,9 @@ namespace Kerbecs::Tracing::Internal {
 		return static_cast<uint32_t>((addr * 0x9e3779b97f4a7c15ULL) >> 32);
 	}
 
-	// AllocationState
-	//
-	//  Empty      - node is unused in the pool, never been assigned
-	//  Live       - block is allocated, all objects valid, safe to access
-	//  Retiring   - dtor cycle is in progress on this block; the thread that
-	//               won m_DtorLock owns the transition. Any other thread
-	//               attempting to access this block must treat it as a
-	//               RetiredBoundaryViolation and fail fast. Transitions back
-	//               to Live if m_LiveCount > 0 after the dtor cycle, or
-	//               forward to Quarantine if m_LiveCount == 0.
-	//  Quarantine - block is freed from the user perspective but memory is
-	//               not yet reclaimed. Use-after-free detection window.
-	//               Waits 2 epoch cycles before transitioning to Dead.
-	//  Dead       - node is fully retired. Slot remains in the bucket chain
-	//               but is skipped by all lookups. Memory has been released
-	//               via the stored dealloc thunk.
+	// AllocationState lifecycle:
+	// Empty (unused) -> Live (allocated) -> Retiring (dtor active) ->
+	// Quarantine (freed, UAF detection window) -> Dead (reclaimed, skipped by lookups).
 	enum class KERBECS_RUNTIME_API AllocationState : uint8_t {
 		Empty = 0,
 		Live = 1,
@@ -92,12 +79,8 @@ namespace Kerbecs::Tracing::Internal {
 		SpinLock m_DtorLock;
 		RegistryNode* m_Next = nullptr;
 
-		// UAF guard across slot recycling (v0.2 SS3.5). Bumped every time
-		// this slot transitions Empty/Dead -> Live (AllocationRegistry::insert).
-		// ShadowedMemory<T> snapshots this at construction time; a stale
-		// handle whose generation no longer matches the slot's current value
-		// is provably referring to a since-recycled block, even if the VA
-		// happens to have been reused for a new allocation.
+		// UAF guard across slot recycling: Bumped on insert.
+		// ShadowedMemory<T> snapshots this; mismatch detects recycled VA usage.
 		std::atomic<uint64_t> m_Generation{ 0 };
 	};
 

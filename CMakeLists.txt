@@ -13,6 +13,11 @@ add_library(Kerbecs SHARED
     ${Kerbecs_SOURCES}
 )
 
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES
+    ${Kerbecs_HEADERS}
+    ${Kerbecs_SOURCES}
+)
+
 set(KERBECS_QUARANTINE_CAPACITY 4096 CACHE STRING "Quarantine ring buffer slot count (must be power of two)")
 set(KERBECS_REGION_TABLE_CAPACITY 1024 CACHE STRING "Region-lookup table slot count for wild-pointer-to-Region resolution (v0.2 SS5.2)")
 

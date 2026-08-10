@@ -26,19 +26,13 @@
 #include "KerbecsAllocators.h"
 #include "MemorySupport.h"
 #include "QuarantineQueue.h"
+#include <chrono>
+#include <thread>
 
-// KerbecsRuntime (v0.2 naming map - renamed from KerbecsMemoryZone; namespace
-// renamed from Kerbecs::MemoryZone to Kerbecs::Runtime). "Zone" is purely an
-// engine-internal VA-partition concept from here down - a caller never sees
-// the word "zone" anywhere in the public surface. Region is the only thing
-// callers reason about; Region asks KerbecsRuntime for zone-backed storage
-// through shadowzoneAllocate/metadataZoneAllocate/registerRegion.
-//
-// AllocationRegistry is NOT a member here anymore (v0.2 SS7.1) - each Region
-// owns its own registry directly. KerbecsRuntime keeps only what stays
-// genuinely shared: the QuarantineQueue + epoch (SS7.2, a single shared
-// instance so the UAF-detection window means the same thing everywhere) and
-// global stats.
+// KerbecsRuntime: Engine-internal VA-partition manager.
+// Regions request zone-backed storage (shadowzoneAllocate/metadataZoneAllocate/registerRegion).
+// AllocationRegistry is owned per-Region; KerbecsRuntime owns only shared state:
+// QuarantineQueue + epoch and global stats.
 namespace Kerbecs::Runtime {
 	constexpr uintptr_t MEMORY_ZONE_ADDRESS = 0x0000100000000000; // preferred VA base
 
@@ -51,6 +45,11 @@ namespace Kerbecs::Runtime {
 
 	constexpr size_t REDZONE_SIZE = 16;
 	constexpr size_t CANARY_SIZE = 8;
+
+	// Drain thread cadence: each tick bumps m_Epoch by 1 and does a non-forced
+	// flushEligible pass, so a block enqueued at epoch N becomes eligible for
+	// release after roughly 2 * DRAIN_INTERVAL_MS.
+	constexpr auto DRAIN_INTERVAL = std::chrono::milliseconds(50);
 
 	// [Size: 32 bytes]
 	struct KERBECS_RUNTIME_API alignas(32) NormalMetaData final {
@@ -70,23 +69,12 @@ namespace Kerbecs::Runtime {
 		size_t m_Checksum;
 	};
 
-	// AccessInfo (v0.2 SS3/SS8.1)
-	//
-	// The fixed, Layout-agnostic struct ShadowedMemory<T>::m_MetaPtr actually
-	// resolves to. Lives in the Region's MetadataZone-backed block, separate
-	// from the Layout-embedded NormalMetaData/EnhancedMetaData above (which
-	// stay block-relative and Layout-specific, used for checksums). Being
-	// fixed-shape regardless of which Layout the Region uses is what lets
-	// ShadowedMemory<T> read through m_MetaPtr without knowing the Region's
-	// Layout template parameter at all.
+	// AccessInfo: Fixed, Layout-agnostic target for ShadowedMemory<T>::m_MetaPtr
+	// in MetadataZone. Discouples ShadowedMemory<T> reads from Region Layout template parameters,
+	// allowing O(1) bounds and generation checks without knowing the Region's Layout type.
 	struct KERBECS_RUNTIME_API alignas(16) AccessInfo final {
-		size_t   m_UserSize;   // payload byte size - ShadowedMemory<T>::operator+ bounds check
-		uint64_t m_Generation; // mirrors the owning RegistryNode::m_Generation - O(1) staleness check, no registry lookup needed
-	};
-
-	struct KERBECS_RUNTIME_API UserRange final {
-		void* m_Start;
-		void* m_End; // inclusive
+		size_t                m_UserSize;   // payload byte size - ShadowedMemory<T>::operator+ bounds check
+		std::atomic<uint64_t> m_Generation; // mirrors the owning RegistryNode::m_Generation - O(1) staleness check, no registry lookup needed. Atomic: written by Region::destroy while concurrently read (lock-free) by ShadowedMemory::_check() on other threads.
 	};
 
 	// KerbecsRuntime
@@ -105,7 +93,7 @@ namespace Kerbecs::Runtime {
 	//   m_StaticAllocator      -> bumps inside m_StaticZone (KERBECS_PERSISTENT)
 	//   m_GlobalAllocator      -> bumps inside m_GlobalZone (KERBECS_GLOBAL)
 	//   m_MetadataZoneAllocator-> bumps inside m_MetadataZone (per-allocation
-	//                             metadata/guard poisoning, v0.2 SS8.1)
+	//                             metadata/guard poisoning)
 	//
 	// The quarantine self-allocates its own storage via Memory::allocate - it
 	// does not carve from any zone. Each Region's own AllocationRegistry does
@@ -116,7 +104,7 @@ namespace Kerbecs::Runtime {
 		void* m_ShadowZone = nullptr;   // shadow bitmap region
 		void* m_GlobalZone = nullptr;   // backing for GlobalAllocator
 		void* m_StaticZone = nullptr;   // backing for StaticAllocator
-		void* m_MetadataZone = nullptr; // backing for MetadataZoneAllocator (v0.2 SS4.1/SS8)
+		void* m_MetadataZone = nullptr; // backing for MetadataZoneAllocator
 
 		// Four lazy-commit bump allocators - one per zone.
 		// Owned directly by the runtime. MemorySupport wrappers hold pointers
@@ -133,16 +121,21 @@ namespace Kerbecs::Runtime {
 		Shadow::Internal::MemorySupport<Allocators::MetadataZoneAllocator> m_MetadataZoneAllocator;
 
 		std::atomic<uint64_t> m_Epoch{ 0 };
-		// Global stats - all atomic counters.
 		KerbecsStats m_Stats;
 
-		// Shared across every Region (v0.2 SS7.2) - deliberately not per-Region.
+		// Shared across every Region - deliberately not per-Region.
 		Quarantine::QuarantineQueue m_Quarantine;
 
 		std::atomic<bool> m_Initialized{ false };
 		std::atomic<bool> m_Shutdown{ false };
 
-		// Non-copyable, non-movable.
+		// Owns the epoch/drain cadence internally - callers never manage a
+		// background thread themselves. Started at the end of init(), stopped
+		// and joined at the start of teardownShadowzone() before the queue
+		// itself is force-flushed and shut down.
+		std::thread       m_DrainThread;
+		std::atomic<bool> m_DrainRunning{ false };
+
 		KerbecsRuntime() = default;
 		KerbecsRuntime(const KerbecsRuntime&) = delete;
 		KerbecsRuntime& operator=(const KerbecsRuntime&) = delete;
@@ -153,8 +146,13 @@ namespace Kerbecs::Runtime {
 		// No FreeCallback parameter - quarantine is self-contained.
 		bool init() noexcept;
 
-		// Zone-backed storage requests made by Region during construction
-		// (v0.2 SS4.1). Region does not reserve, own, or constrain this VA -
+	private:
+		void _drainLoop() noexcept;
+
+	public:
+
+		// Zone-backed storage requests made by Region during construction.
+		// Region does not reserve, own, or constrain this VA -
 		// it is pure instrumentation and bookkeeping around what it wraps.
 		KERBECS_NODISCARD_MSG("Cannot discard allocated shadow blob pointer")
 			void* shadowzoneAllocate(size_t v_Bytes) noexcept;
@@ -162,7 +160,7 @@ namespace Kerbecs::Runtime {
 		KERBECS_NODISCARD_MSG("Cannot discard allocated metadata block pointer")
 			void* metadataZoneAllocate(size_t v_Bytes, size_t v_Align) noexcept;
 
-		// Registers a Region with the Region-lookup table (v0.2 SS5.2/5.3) so
+		// Registers a Region with the Region-lookup table so
 		// a bare/wild address can later be resolved back to the Region that
 		// owns it. p_Region is stored opaquely (void*) here - the concrete
 		// Region<Layout,ThreadPolicy,Allocator> type lives in Region.h, which
@@ -200,12 +198,6 @@ namespace Kerbecs::Runtime {
 	KERBECS_RUNTIME_API
 		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
 		Quarantine::QuarantineQueue& quarantine() noexcept;
-
-	KERBECS_RUNTIME_API void*  mapToShadow(void* p_User, size_t v_Size) noexcept;
-	KERBECS_RUNTIME_API UserRange mapToUser(void* p_Shadow) noexcept;
-
-	KERBECS_RUNTIME_API bool shadowPoison(void* p_UserPtr, size_t v_Size) noexcept;
-	KERBECS_RUNTIME_API bool shadowUnpoison(void* p_UserPtr, size_t v_Size) noexcept;
 
 	// Defined in KerbecsRuntime.cpp — not inline, so instance() is always the DLL copy.
 	KERBECS_RUNTIME_API bool initShadowzone() noexcept;

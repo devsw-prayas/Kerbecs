@@ -23,44 +23,13 @@
 #include "Kerbecs.h"
 #include "RegistryUtils.h"
 
-// Region-membership resolution (v0.2 SS5). A bare/wild address with no
-// ShadowedMemory<T> behind it needs a way to ask "which Region, if any, owns
-// this?" before any per-block lookup can even begin.
-//
-// The doc (SS5.2) describes reusing AllocationRegistry's hash+chain+range-check
-// shape wholesale. That shape hashes an exact block-base pointer at insert
-// time and looks it up by the SAME exact pointer later - AllocationRegistry
-// never has to resolve an arbitrary INTERIOR address to a bucket, because
-// every lookup already carries the block's base (via a resolved
-// ShadowedMemory<T> or an already-known m_BlockBase).
-//
-// Region-membership resolution is structurally different: resolveRegion is
-// handed an arbitrary wild address somewhere INSIDE a Region's range, not
-// that Region's base. Hashing that wild address can't deterministically land
-// in the same bucket a RegionRecord was filed under by ITS base address - a
-// Region's range spans far more values than a single hash bucket represents.
-// Given the doc's own sizing note (Region count is "realistically a
-// handful", the 1024 ceiling is headroom, never an expected count), this
-// implementation resolves by a linear scan over the small registered-Region
-// list instead of pretending to bucket-hash a range-spanning record. This is
-// O(region count) - equivalent to "trivially short chain walk" at the scale
-// the doc describes, just without the hash indirection that wouldn't
-// actually narrow the search for this particular lookup shape.
+// Region-membership resolution: Linear scan over registered regions resolves
+// arbitrary interior addresses to a RegionRecord. Simple scan is used because range-spanning
+// addresses cannot bucket-hash like exact block bases, and region counts are small.
 namespace Kerbecs::Tracing {
 
-	// RegionRecord - registry-internal only, never exposed publicly (v0.2 SS5.3).
-	//
-	// Deviates from the doc's minimal 3-pointer/24-byte sketch
-	// (m_RegionPtr/m_ShadowMapBase/m_MetadataMapBase only): the doc's own
-	// range-check step ("range-check the address against that Region's real
-	// [base, base+size)") needs an actual base+size to check against, which
-	// three pointers alone don't carry. m_RegionBase/m_RegionSize are added
-	// here in the same spirit the doc already uses for the other two fields
-	// ("mirrors Region::m_ShadowBlobPtr", "mirrors Region::m_MetadataMapBase") -
-	// mirroring Region::m_Size (and the base address of what it wraps) rather
-	// than reaching back through a type-erased Region* on every lookup.
-	// Immutable after registration; Regions are never recycled, so no
-	// generation field is needed (matches the doc exactly on this point).
+	// RegionRecord - registry-internal tuple containing Region base, size,
+	// shadow/metadata map bases, and opaque Region pointer. Immutable after registration.
 	struct alignas(64) RegionRecord {
 		void* m_RegionPtr = nullptr;       // opaque handle back to the owning Region (type-erased - Region<L,T,A> varies per instantiation)
 		void* m_ShadowMapBase = nullptr;   // mirrors Region::m_ShadowBlobPtr
@@ -88,7 +57,7 @@ namespace Kerbecs::Tracing {
 	// Linear scan over the registered-Region list, range-checking p_Address
 	// against each candidate's [m_RegionBase, m_RegionBase + m_RegionSize).
 	// First match wins; exhausting the list means the address is genuinely
-	// outside everything Kerbecs manages (v0.2 SS5.2 intent; see the
+	// outside everything Kerbecs manages (see the
 	// linear-scan-vs-hash-bucket note above this namespace for why this
 	// doesn't bucket-hash the way AllocationRegistry does).
 	KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard region resolution result")

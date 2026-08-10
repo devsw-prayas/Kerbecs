@@ -12,14 +12,12 @@
 #include "KerbecsEnforcements.h"
 #include "KerbecsMemory.h"
 #include "KerbecsRuntime.h"
+#include "MemoryLayouts.h"
 #include "MemorySupport.h"
 #include "RegionRecord.h"
 #include "ShadowUtils.h"
 #include "ShadowedMemory.h"
 #include <utility>
-// Region is Kerbecs's caller-facing instrumentation wrapper (v0.2 SS4).
-// It never owns the virtual-address range supplied by Allocator; it only owns
-// the bookkeeping that makes allocations within that range observable.
 namespace Kerbecs {
 
 	template<typename LayoutT, Shadow::Utils::ThreadPolicy ThreadPolicyT, typename AllocatorT>
@@ -70,9 +68,11 @@ namespace Kerbecs {
 		}
 
 		~Region() {
-			// Allocation APIs are deliberately introduced in the next slice. At
-			// this stage no external path can populate the registry, so teardown
-			// cannot leave a quarantine entry pointing at this registry.
+			// Flush shared QuarantineQueue to clear any raw m_OwningRegistry pointers to this
+			// Region before m_AllocationRegistry destruction (flushes other regions early, trading
+			// UAF window for pointer safety).
+			Runtime::quarantine().flushEligible(SIZE_MAX, true);
+			KERBECS_ASSERT(m_AllocationRegistry.liveCount() == 0 && "Region destroyed with live allocations still outstanding");
 			m_AllocationRegistry.shutdown();
 		}
 
@@ -117,9 +117,10 @@ namespace Kerbecs {
 			const size_t slot = static_cast<size_t>(node - pool.m_Pool);
 			auto* info = static_cast<Runtime::AccessInfo*>(m_MetadataMapBase) + slot;
 			info->m_UserSize = userSize;
-			info->m_Generation = node->m_Generation.load(std::memory_order_acquire);
+			const uint64_t generation = node->m_Generation.load(std::memory_order_acquire);
+			info->m_Generation.store(generation, std::memory_order_release);
 			auto* shadow = static_cast<uint8_t*>(m_ShadowBlobPtr) + ((reinterpret_cast<uintptr_t>(payload) - reinterpret_cast<uintptr_t>(m_RegionBase)) >> Runtime::SHADOW_SCALE);
-			return ShadowedMemory<T>(info, payload, shadow, info->m_Generation);
+			return ShadowedMemory<T>(info, payload, shadow, generation);
 		}
 
 		template<typename T, typename... Args>
@@ -137,11 +138,12 @@ namespace Kerbecs {
 			if (!node) return false;
 			auto* retiring = m_AllocationRegistry.beginRetiring(node->m_BlockBase, Tracing::Internal::currentThreadID(), ThreadPolicyT);
 			if (!retiring) return false;
+			const bool finalObject = retiring->m_LiveCount.fetch_sub(1, std::memory_order_acq_rel) == 1;
+			// Invalidate generation before object teardown to prevent concurrent stale-handle reads in _check().
+			if (finalObject) static_cast<Runtime::AccessInfo*>(v_Handle.m_MetaPtr)->m_Generation.store(0, std::memory_order_release);
 			static_cast<T*>(v_Handle.m_PayloadPtr)->~T();
 			std::memset(v_Handle.m_PayloadPtr, Runtime::TOMBSTONE, sizeof(T));
 			KERBECS_UNUSED(_setShadow(v_Handle.m_PayloadPtr, sizeof(T), true));
-			const bool finalObject = retiring->m_LiveCount.fetch_sub(1, std::memory_order_acq_rel) == 1;
-			if (finalObject) static_cast<Runtime::AccessInfo*>(v_Handle.m_MetaPtr)->m_Generation = 0;
 			m_AllocationRegistry.endRetiring(node->m_BlockBase, Runtime::instance().m_Epoch.load(std::memory_order_acquire), &m_AllocatorSupport, &Shadow::Internal::MemorySupport<AllocatorT>::thunk);
 			return true;
 		}
@@ -194,5 +196,24 @@ namespace Kerbecs {
 		Tracing::AllocationRegistry m_AllocationRegistry;
 		bool m_Initialized = false;
 	};
+
+	// Convenience aliases - fix Layout + ThreadPolicy, leave only the Allocator
+	// to name. Flexible is the common case (cross-thread destroy allowed via
+	// the dtor lock), so it gets the plain name; Strict is the same Layout
+	// with same-thread-only destroy enforced.
+	template<typename AllocatorT>
+	using NormalRegion = Region<Layout::NormalLayout, Shadow::Utils::ThreadPolicy::Flexible, AllocatorT>;
+	template<typename AllocatorT>
+	using NormalRegionStrict = Region<Layout::NormalLayout, Shadow::Utils::ThreadPolicy::Strict, AllocatorT>;
+
+	template<typename AllocatorT>
+	using EnhancedRegion = Region<Layout::EnhancedLayout, Shadow::Utils::ThreadPolicy::Flexible, AllocatorT>;
+	template<typename AllocatorT>
+	using EnhancedRegionStrict = Region<Layout::EnhancedLayout, Shadow::Utils::ThreadPolicy::Strict, AllocatorT>;
+
+	template<typename AllocatorT>
+	using StaticRegion = Region<Layout::StaticLayout, Shadow::Utils::ThreadPolicy::Flexible, AllocatorT>;
+	template<typename AllocatorT>
+	using StaticRegionStrict = Region<Layout::StaticLayout, Shadow::Utils::ThreadPolicy::Strict, AllocatorT>;
 
 } // namespace Kerbecs
