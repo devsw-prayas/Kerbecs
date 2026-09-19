@@ -44,36 +44,24 @@ namespace Kerbecs {
 
 	struct KERBECS_RUNTIME_API Violation {
 		ViolationKind m_Kind = ViolationKind::None;
-		const char* m_Name = nullptr;         // named allocation tag (string literal, not owned)
+		const char* m_Name = nullptr;
 		void* m_Address = nullptr;
 		void* m_BlockBase = nullptr;
 		size_t        m_BlockSize{};
-		uint64_t      m_Timestamp{};    // __rdtsc() at detection time
+		uint64_t      m_Timestamp{};
 		uint32_t      m_ThreadID{};
 	};
 
-	// Per-thread capacity of the violation stack (see pushViolation/popViolation
-	// below). Fixed, no heap allocation - a burst past this size evicts the
-	// oldest not-yet-popped entry rather than growing or blocking.
 	inline constexpr size_t VIOLATION_STACK_CAPACITY = 32;
 
 	namespace Internal {
-		// Called by every detection site; not part of the public query surface -
-		// callers drain through popViolation() below.
 		KERBECS_RUNTIME_API void pushViolation(const Violation& v_Violation) noexcept;
 	}
 
-	// Pops the most recently pushed, not-yet-popped Violation on the calling
-	// thread into r_Out (LIFO). Returns false and leaves r_Out untouched if this
-	// thread's stack is empty - drain it in a loop to walk the whole backlog.
 	KERBECS_RUNTIME_API
 		KERBECS_NODISCARD_MSG("Cannot discard whether a violation was popped")
 		bool popViolation(Violation& r_Out) noexcept;
 
-	// Builds a Violation with its thread id/timestamp stamped, for every
-	// detection site to push via Internal::pushViolation - keeps that stamping
-	// logic (currentThreadID()/__rdtsc()) in one place instead of duplicated at
-	// every call site in Region.h/ShadowedMemory.h.
 	KERBECS_RUNTIME_API
 		KERBECS_NODISCARD_MSG("Cannot discard constructed violation")
 		Violation makeViolation(ViolationKind v_Kind, void* p_Address, void* p_BlockBase, size_t v_BlockSize) noexcept;

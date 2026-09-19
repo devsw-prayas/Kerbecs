@@ -86,8 +86,7 @@ namespace Kerbecs::Tracing {
 		rec.m_RegionBase = p_RegionBase;
 		rec.m_RegionSize = v_RegionSize;
 
-		// Published last, with release - resolveRegion's acquire read of
-		// s_Count only ever observes fully-populated records.
+		// Published last, with release, so resolveRegion never observes a partial record.
 		s_Count.store(idx + 1, std::memory_order_release);
 
 		s_RegisterLock.unlock();

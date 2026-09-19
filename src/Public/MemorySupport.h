@@ -24,9 +24,6 @@
 #include "KerbecsEnforcements.h"
 
 namespace Kerbecs::Shadow::Internal {
-	// Non-owning pointer wrapper around concrete allocator A (stores A* owned externally).
-	// Provides static type-erased thunk(p_Alloc, p_Block, v_Bytes) stamped into QuarantineEntry,
-	// allowing QuarantineQueue to flush deferred deallocations without knowing template parameter A.
 	template<typename A>
 		requires Enforcement::AllocatorConcept<A>
 	struct KERBECS_RUNTIME_API MemorySupport final {
@@ -40,7 +37,6 @@ namespace Kerbecs::Shadow::Internal {
 			: m_Allocator(p_Allocator) {
 		}
 
-		// Non-owning - copy and move just transfer the pointer.
 		MemorySupport(const MemorySupport&) noexcept = default;
 		MemorySupport& operator=(const MemorySupport&) noexcept = default;
 		MemorySupport(MemorySupport&&) noexcept = default;

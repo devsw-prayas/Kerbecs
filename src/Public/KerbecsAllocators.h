@@ -30,7 +30,6 @@ namespace Kerbecs::Allocators {
 		size_t              m_Size = 0;
 		std::atomic<size_t> m_Bump{ 0 };
 
-		// Non-copyable, non-movable - lives as a zone member.
 		BumpAllocatorBase() = default;
 		BumpAllocatorBase(const BumpAllocatorBase&) = delete;
 		BumpAllocatorBase& operator=(const BumpAllocatorBase&) = delete;
@@ -46,18 +45,12 @@ namespace Kerbecs::Allocators {
 		void deallocate(void* /*p_Block*/, size_t /*v_Bytes*/) noexcept;
 
 	protected:
-		// Bumps VA cursor without page commits. Sparsely-touched callers (e.g.
-		// ShadowzoneAllocator) rely on lazy commitPageIfNeeded in Region::_setShadow
-		// rather than eager per-page loops that cause huge front VirtualAlloc commits.
 		KERBECS_NODISCARD_MSG("Cannot discard reserved block pointer")
 			uint8_t* _bumpReserve(size_t v_Bytes, size_t v_Align) noexcept;
 	};
 
 	struct KERBECS_RUNTIME_API ShadowzoneAllocator final : BumpAllocatorBase {
-		// Deliberately skips BumpAllocatorBase::allocate's eager per-page commit -
-		// this blob spans the whole zone but is only ever touched one shadow byte
-		// at a time (Region::_setShadow), so eager-committing here is what caused
-		// the 125GB-reservation bug this class was fixed for (see 3f0a41b).
+		// eager per-page commit here caused a 125GB-reservation bug; must stay lazy.
 		KERBECS_NODISCARD_MSG("Cannot discard allocated shadow block pointer")
 			void* allocate(size_t v_Bytes, size_t v_Align) noexcept;
 
@@ -78,9 +71,6 @@ namespace Kerbecs::Allocators {
 		void deallocate(void* p_Block, size_t v_Bytes) noexcept;
 	};
 
-	// MetadataZoneAllocator: Backs Region::m_MetadataMapBase.
-	// Metadata/guard regions stamped here get dedicated poison bits,
-	// allowing wild-pointer checks to catch out-of-bounds hits into metadata.
 	struct KERBECS_RUNTIME_API MetadataZoneAllocator final : BumpAllocatorBase {
 		KERBECS_NODISCARD_MSG("Cannot discard allocated metadata block pointer")
 			void* allocate(size_t v_Bytes, size_t v_Align) noexcept;

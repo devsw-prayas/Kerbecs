@@ -26,23 +26,18 @@
 
 namespace Kerbecs::Quarantine {
 
-	// Single shared instance across all Regions so epoch increments maintain
-	// a consistent UAF-detection window process-wide. m_BlockBase uses release/acquire ordering.
 	struct KERBECS_RUNTIME_API alignas(64) QuarantineEntry {
 		size_t   m_BlockSize = 0;
 		uint64_t m_Epoch = 0;
 		void*    m_Allocator = nullptr;
 		void   (*m_DeallocThunk)(void*, void*, size_t) = nullptr;
 
-		// Stamped at enqueue time to allow flushEligible to route the Quarantine->Dead CAS
-		// directly to the owning Region's AllocationRegistry without hash lookups.
+		// Stamped at enqueue time so flushEligible can route the Quarantine->Dead CAS without a hash lookup.
 		Tracing::AllocationRegistry* m_OwningRegistry = nullptr;
 
 		std::atomic<void*> m_BlockBase{ nullptr };
 	};
 
-	// Fixed-capacity ring buffer. enqueue: fetch_add on m_Tail per thread.
-	// flushEligible: serialised by m_FlushLock to prevent concurrent m_Head races.
 	struct KERBECS_RUNTIME_API QuarantineQueue {
 
 		QuarantineQueue() = default;

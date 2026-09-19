@@ -84,9 +84,7 @@ namespace Kerbecs::Tracing {
 
 		bucket.m_Lock.lock();
 
-		// Highest generation among nodes at this base carried forward +1 so stale
-		// ShadowedMemory<T> handles from recycled addresses never match new nodes.
-		// _allocateNode() bump-allocates fresh nodes rather than reusing Dead ones in-place.
+		// Carried forward +1 so stale ShadowedMemory<T> handles never match a recycled address.
 		uint64_t nextGeneration = 1;
 
 		{
@@ -95,8 +93,6 @@ namespace Kerbecs::Tracing {
 
 			while (cur) {
 				if (cur->m_BlockBase == p_BlockBase) {
-					// Only fail if the node is NOT Dead. Dead nodes are skipped
-					// to allow virtual address reuse at the same base pointer.
 					if (cur->m_State.load(std::memory_order_acquire) !=
 						Internal::AllocationState::Dead) {
 						bucket.m_Lock.unlock();
@@ -131,8 +127,6 @@ namespace Kerbecs::Tracing {
 			Internal::AllocationState::Live,
 			std::memory_order_release);
 
-		// Both a lock AND a CAS: lock prevents concurrent inserts to the same
-		// bucket racing on m_Head; CAS is the canonical publication primitive.
 		Internal::RegistryNode* head;
 		do {
 			head = bucket.m_Head.load(std::memory_order_relaxed);
@@ -167,7 +161,7 @@ namespace Kerbecs::Tracing {
 			}
 		}
 
-		// tryLock failure = concurrent dtor on the same block, caller fires violation.
+		// tryLock failure = concurrent dtor on the same block; caller fires violation.
 		if (!node->m_DtorLock.tryLock())
 			return nullptr;
 

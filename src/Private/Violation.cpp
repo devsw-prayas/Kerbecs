@@ -27,11 +27,7 @@ namespace Kerbecs {
 
 	namespace this_thread {
 		namespace {
-			// Fixed-capacity ring used as a stack: m_Top is the next write slot,
-			// m_Count is the number of currently valid entries (capped at
-			// VIOLATION_STACK_CAPACITY). Pushing past capacity advances m_Top onto
-			// the slot popViolation would otherwise have returned last (the
-			// bottom of the stack), so that entry is silently evicted.
+			// Pushing past capacity evicts the oldest entry.
 			struct ViolationStack {
 				Violation m_Entries[VIOLATION_STACK_CAPACITY]{};
 				size_t    m_Top = 0;

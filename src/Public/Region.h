@@ -68,9 +68,6 @@ namespace Kerbecs {
 		}
 
 		~Region() {
-			// Flush shared QuarantineQueue to clear any raw m_OwningRegistry pointers to this
-			// Region before m_AllocationRegistry destruction (flushes other regions early, trading
-			// UAF window for pointer safety).
 			Runtime::quarantine().flushEligible(SIZE_MAX, true);
 			KERBECS_ASSERT(m_AllocationRegistry.liveCount() == 0 && "Region destroyed with live allocations still outstanding");
 			m_AllocationRegistry.shutdown();
@@ -147,8 +144,6 @@ namespace Kerbecs {
 			if (!node) { _reportViolation(ViolationKind::DoubleFree, v_Handle.m_PayloadPtr, nullptr, sizeof(T)); return false; }
 			auto* retiring = m_AllocationRegistry.beginRetiring(node->m_BlockBase, Tracing::Internal::currentThreadID(), ThreadPolicyT);
 			if (!retiring) {
-				// beginRetiring() folds three failures into one nullptr - re-read node
-				// state to classify (best-effort, TOCTOU race against beginRetiring).
 				ViolationKind kind = ViolationKind::DoubleFree;
 				if constexpr (ThreadPolicyT == Shadow::Utils::ThreadPolicy::Strict) {
 					if (Tracing::Internal::currentThreadID() != node->m_ThreadID) kind = ViolationKind::ThreadOwnership;
@@ -159,7 +154,6 @@ namespace Kerbecs {
 				return false;
 			}
 			const bool finalObject = retiring->m_LiveCount.fetch_sub(1, std::memory_order_acq_rel) == 1;
-			// Invalidate generation before object teardown to prevent concurrent stale-handle reads in _check().
 			if (finalObject) static_cast<Runtime::AccessInfo*>(v_Handle.m_MetaPtr)->m_Generation.store(0, std::memory_order_release);
 			static_cast<T*>(v_Handle.m_PayloadPtr)->~T();
 			std::memset(v_Handle.m_PayloadPtr, Runtime::TOMBSTONE, sizeof(T));
@@ -168,8 +162,6 @@ namespace Kerbecs {
 			return true;
 		}
 	private:
-		// Shared by every failure branch above instead of each duplicating the
-		// stats-bump + makeViolation()/pushViolation() pair.
 		void _reportViolation(ViolationKind v_Kind, void* p_Address, void* p_BlockBase, size_t v_BlockSize) noexcept {
 			statsOnViolation(&Runtime::instance().m_Stats);
 			Internal::pushViolation(makeViolation(v_Kind, p_Address, p_BlockBase, v_BlockSize));
@@ -224,10 +216,6 @@ namespace Kerbecs {
 		bool m_Initialized = false;
 	};
 
-	// Convenience aliases - fix Layout + ThreadPolicy, leave only the Allocator
-	// to name. Flexible is the common case (cross-thread destroy allowed via
-	// the dtor lock), so it gets the plain name; Strict is the same Layout
-	// with same-thread-only destroy enforced.
 	template<typename AllocatorT>
 	using NormalRegion = Region<Layout::NormalLayout, Shadow::Utils::ThreadPolicy::Flexible, AllocatorT>;
 	template<typename AllocatorT>

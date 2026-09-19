@@ -37,14 +37,6 @@ namespace Kerbecs::Shadow::Utils {
 		Flexible  // cross-thread frees allowed (warn-only)
 	};
 
-	// DiagnosticAccess
-	//
-	// Controls whether a live access inside an engine-owned region (metadata,
-	// guards) reports as EngineMemoryAccessViolation with real block info, or
-	// stays the default UndefinedWildPointerAccess with block base/size
-	// zeroed. Always present in both builds - deliberately not a build flag,
-	// since a compile-time-invisible behavior difference is exactly what the
-	// Philosophy Law forbids.
 	enum class KERBECS_RUNTIME_API DiagnosticAccess : uint8_t {
 		Restricted, // default - UndefinedWildPointerAccess always fires, block info zeroed
 		Unlocked    // explicit opt-in - EngineMemoryAccessViolation fires with real block info

@@ -30,9 +30,6 @@ namespace Kerbecs::Tracing::Internal {
 		return static_cast<uint32_t>((addr * 0x9e3779b97f4a7c15ULL) >> 32);
 	}
 
-	// AllocationState lifecycle:
-	// Empty (unused) -> Live (allocated) -> Retiring (dtor active) ->
-	// Quarantine (freed, UAF detection window) -> Dead (reclaimed, skipped by lookups).
 	enum class KERBECS_RUNTIME_API AllocationState : uint8_t {
 		Empty = 0,
 		Live = 1,
@@ -77,8 +74,7 @@ namespace Kerbecs::Tracing::Internal {
 		SpinLock m_DtorLock;
 		RegistryNode* m_Next = nullptr;
 
-		// UAF guard across slot recycling: Bumped on insert.
-		// ShadowedMemory<T> snapshots this; mismatch detects recycled VA usage.
+		// Bumped on insert; ShadowedMemory<T> snapshot mismatch detects recycled VA usage.
 		std::atomic<uint64_t> m_Generation{ 0 };
 	};
 

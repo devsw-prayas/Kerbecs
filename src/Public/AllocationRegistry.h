@@ -27,7 +27,7 @@
 #include "Violation.h"
 
 namespace Kerbecs::Tracing {
-	static constexpr size_t kBucketCount = 2048;    // 2^11
+	static constexpr size_t kBucketCount = 2048;
 
 	static_assert((kBucketCount& (kBucketCount - 1)) == 0);
 
@@ -36,11 +36,6 @@ namespace Kerbecs::Tracing {
 		size_t                  m_Capacity = 0;
 	};
 
-	// Striped concurrent hash map (2048 buckets, intrusive node pool) owned one-per-Region.
-	// Configurable capacity avoids sizing small regions for large pools, making
-	// two-tier wild-pointer resolution (RegionRecord) cheap by rejecting wild pointers
-	// before searching node pools. Reads are lock-free; inserts acquire per-bucket SpinLock + CAS.
-	// State transitions use CAS; dtor cycle serialised via per-node m_DtorLock.
 	class KERBECS_RUNTIME_API AllocationRegistry {
 	public:
 		explicit AllocationRegistry(size_t v_NodeCapacity) noexcept
@@ -80,8 +75,6 @@ namespace Kerbecs::Tracing {
 		Internal::RegistryNode* find(const void* p_BlockBase) noexcept;
 		const Internal::RegistryNode* find(const void* p_BlockBase) const noexcept;
 
-		// p_BlockBase is the block base (not an interior pointer) — hashed to the
-		// correct bucket, then range-checked against [m_UserPtr, m_UserPtr + m_UserSize).
 		Internal::RegistryNode* findRange(const void* p_BlockBase, const void* p_Address) noexcept;
 		const Internal::RegistryNode* findRange(const void* p_BlockBase, const void* p_Address) const noexcept;
 
@@ -105,7 +98,6 @@ namespace Kerbecs::Tracing {
 
 		Internal::RegistryNode* m_NodePool = nullptr;
 
-		// Shift by 6 to ignore sub-cache-line bits before Fibonacci hash.
 		KERBECS_FORCEINLINE static size_t _index(const void* p) noexcept {
 			uintptr_t key = reinterpret_cast<uintptr_t>(p) >> 6;
 			key *= 0x9e3779b97f4a7c15ULL;

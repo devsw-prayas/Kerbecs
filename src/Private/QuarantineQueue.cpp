@@ -78,14 +78,8 @@ namespace Kerbecs::Quarantine {
 		const size_t mask = m_Capacity - 1;
 		const size_t tail = m_Tail.fetch_add(1, std::memory_order_acq_rel);
 
-		// Saturation is decided by occupancy (tail - head), not by peeking at the
-		// claimed slot's own content - two fetch_adds exactly m_Capacity apart can
-		// land on the same index, and if the earlier one hasn't published its
-		// m_BlockBase yet, a content check alone would pass and both threads would
-		// write the slot's non-atomic fields concurrently. The acquire load of
-		// m_Head here synchronizes with flushEligible's release fetch_add on
-		// m_Head, which happens strictly after that slot's previous occupant was
-		// already nulled out - so once this check passes, the slot is provably free.
+		// Occupancy check, not slot-content peek: two fetch_adds m_Capacity apart can land on
+		// the same index before the earlier one publishes m_BlockBase.
 		const size_t head = m_Head.load(std::memory_order_acquire);
 		if (tail - head >= m_Capacity)
 			_onSaturation();
