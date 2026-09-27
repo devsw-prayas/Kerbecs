@@ -43,13 +43,13 @@ namespace Kerbecs::Shadow::Utils {
 	};
 
 
-	KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard validation check for tombstone")
+	KERBECS_NODISCARD_MSG("Cannot discard validation check for tombstone") KERBECS_RUNTIME_API
 	bool verifyTombstone(const void* p_Memory, size_t v_Length);
 
-	KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard validation check for redzone ")
+	KERBECS_NODISCARD_MSG("Cannot discard validation check for redzone ") KERBECS_RUNTIME_API
 	bool verifyRedzone(const void* p_User, size_t v_Length);
 
-	KERBECS_RUNTIME_API	KERBECS_NODISCARD_MSG("Cannot discard validation check for canaries")
+	KERBECS_NODISCARD_MSG("Cannot discard validation check for canaries")	KERBECS_RUNTIME_API
 	bool verifyCanaries(const void* p_User, size_t v_Length);
 
 }

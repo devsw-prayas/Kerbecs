@@ -32,12 +32,12 @@ namespace Kerbecs::StaticSupport {
 	using PersistentRegionT = StaticRegion<Allocators::StaticAllocator>;
 	using GlobalRegionT = StaticRegion<Allocators::GlobalAllocator>;
 
-	KERBECS_RUNTIME_API
-		KERBECS_NODISCARD_MSG("Cannot discard persistent static region reference")
+	KERBECS_NODISCARD_MSG("Cannot discard persistent static region reference")
+		KERBECS_RUNTIME_API
 		PersistentRegionT& persistentRegion() noexcept;
 
-	KERBECS_RUNTIME_API
-		KERBECS_NODISCARD_MSG("Cannot discard global static region reference")
+	KERBECS_NODISCARD_MSG("Cannot discard global static region reference")
+		KERBECS_RUNTIME_API
 		GlobalRegionT& globalRegion() noexcept;
 
 	template<typename T, auto RegionFn>

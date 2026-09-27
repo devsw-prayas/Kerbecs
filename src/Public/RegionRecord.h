@@ -42,7 +42,7 @@ namespace Kerbecs::Tracing {
 		void* p_RegionBase,
 		size_t v_RegionSize) noexcept;
 
-	KERBECS_RUNTIME_API KERBECS_NODISCARD_MSG("Cannot discard region resolution result")
+	KERBECS_NODISCARD_MSG("Cannot discard region resolution result") KERBECS_RUNTIME_API
 		const RegionRecord* resolveRegion(const void* p_Address) noexcept;
 
 	KERBECS_RUNTIME_API bool initRegionTable() noexcept;

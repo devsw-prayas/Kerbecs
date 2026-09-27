@@ -58,11 +58,11 @@ namespace Kerbecs {
 		KERBECS_RUNTIME_API void pushViolation(const Violation& v_Violation) noexcept;
 	}
 
-	KERBECS_RUNTIME_API
-		KERBECS_NODISCARD_MSG("Cannot discard whether a violation was popped")
+	KERBECS_NODISCARD_MSG("Cannot discard whether a violation was popped")
+		KERBECS_RUNTIME_API
 		bool popViolation(Violation& r_Out) noexcept;
 
-	KERBECS_RUNTIME_API
-		KERBECS_NODISCARD_MSG("Cannot discard constructed violation")
+	KERBECS_NODISCARD_MSG("Cannot discard constructed violation")
+		KERBECS_RUNTIME_API
 		Violation makeViolation(ViolationKind v_Kind, void* p_Address, void* p_BlockBase, size_t v_BlockSize) noexcept;
 }

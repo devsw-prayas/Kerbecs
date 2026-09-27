@@ -121,16 +121,16 @@ namespace Kerbecs::Runtime {
 			void* p_RegionBase = nullptr) noexcept;
 	};
 
-	KERBECS_RUNTIME_API
-		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+	KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+		KERBECS_RUNTIME_API
 		KerbecsRuntime& instance() noexcept;
 
-	KERBECS_RUNTIME_API
-		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+	KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+		KERBECS_RUNTIME_API
 		KerbecsStats& stats() noexcept;
 
-	KERBECS_RUNTIME_API
-		KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+	KERBECS_NODISCARD_MSG("Cannot discard singleton reference")
+		KERBECS_RUNTIME_API
 		Quarantine::QuarantineQueue& quarantine() noexcept;
 
 	KERBECS_RUNTIME_API bool initShadowzone() noexcept;
