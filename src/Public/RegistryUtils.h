@@ -30,7 +30,7 @@ namespace Kerbecs::Tracing::Internal {
 		return static_cast<uint32_t>((addr * 0x9e3779b97f4a7c15ULL) >> 32);
 	}
 
-	enum class KERBECS_RUNTIME_API AllocationState : uint8_t {
+	enum class AllocationState : uint8_t {
 		Empty = 0,
 		Live = 1,
 		Retiring = 2,

@@ -23,7 +23,7 @@
 #include "Kerbecs.h"
 
 namespace Kerbecs {
-	enum class KERBECS_RUNTIME_API ViolationKind : uint8_t {
+	enum class ViolationKind : uint8_t {
 		DoubleFree,          // destroy() called on already-destroyed block
 		UseAfterFree,        // access to tombstoned or quarantined block
 		UseBeforeInit,       // access to fully poisoned (never constructed) block

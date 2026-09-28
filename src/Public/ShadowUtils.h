@@ -24,7 +24,7 @@
 
 namespace Kerbecs::Shadow::Utils {
 
-	enum class KERBECS_RUNTIME_API MemoryState : uint8_t {
+	enum class MemoryState : uint8_t {
 		UNINITIALIZED,
 		CONSTRUCTED,
 		DESTROYED,
@@ -32,12 +32,12 @@ namespace Kerbecs::Shadow::Utils {
 	};
 
 
-	enum class KERBECS_RUNTIME_API ThreadPolicy : uint8_t {
+	enum class ThreadPolicy : uint8_t {
 		Strict,   // must be freed on the same thread that allocated
 		Flexible  // cross-thread frees allowed (warn-only)
 	};
 
-	enum class KERBECS_RUNTIME_API DiagnosticAccess : uint8_t {
+	enum class DiagnosticAccess : uint8_t {
 		Restricted, // default - UndefinedWildPointerAccess always fires, block info zeroed
 		Unlocked    // explicit opt-in - EngineMemoryAccessViolation fires with real block info
 	};

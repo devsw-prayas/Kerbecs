@@ -25,6 +25,8 @@
 #include "KerbecsRuntime.h"
 #include "RegistryUtils.h"
 
+#include <cstdlib>
+
 namespace Kerbecs::Quarantine {
 	bool QuarantineQueue::init(
 		size_t        v_Capacity,
@@ -167,6 +169,8 @@ namespace Kerbecs::Quarantine {
 		if (m_Stats)
 			statsOnViolation(m_Stats);
 		KERBECS_TRAP();
+		// __debugbreak returns if a debugger continues; noreturn must not.
+		std::abort();
 	}
 
 	size_t QuarantineQueue::depth() const noexcept {

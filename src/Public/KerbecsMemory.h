@@ -58,7 +58,7 @@ namespace Kerbecs::Memory {
 		return (v_Value + v_Align - 1) & ~static_cast<uintptr_t>(v_Align - 1);
 	}
 
-	enum class KERBECS_RUNTIME_API PageState : uint8_t {
+	enum class PageState : uint8_t {
 		Free,
 		Reserved,
 		Committed,

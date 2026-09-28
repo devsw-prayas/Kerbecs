@@ -81,6 +81,7 @@ namespace Kerbecs::Layout {
 		}
 
 		static bool verifyGuards(const void* p_Block, const Offsets& v_Offsets, size_t v_BlockSize) noexcept {
+			KERBECS_UNUSED(v_BlockSize);
 			if (!p_Block) return false;
 
 			const auto* base = static_cast<const std::byte*>(p_Block);
