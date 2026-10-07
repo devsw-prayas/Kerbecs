@@ -38,6 +38,15 @@ target_compile_definitions(Kerbecs PUBLIC
     KERBECS_BUILDING_RUNTIME
 )
 
+# AUTO follows _DEBUG (set by the debug CRT); ON/OFF pin it. Kerbecs-scoped, so it never collides with a host's DEBUG.
+set(KERBECS_ENABLE_DEBUG_CHECKS AUTO CACHE STRING "Kerbecs asserts: AUTO (follow _DEBUG), ON or OFF")
+set_property(CACHE KERBECS_ENABLE_DEBUG_CHECKS PROPERTY STRINGS AUTO ON OFF)
+if (KERBECS_ENABLE_DEBUG_CHECKS STREQUAL "ON")
+    target_compile_definitions(Kerbecs PUBLIC KERBECS_DEBUG_CHECKS=1)
+elseif (KERBECS_ENABLE_DEBUG_CHECKS STREQUAL "OFF")
+    target_compile_definitions(Kerbecs PUBLIC KERBECS_DEBUG_CHECKS=0)
+endif()
+
 target_include_directories(Kerbecs PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Public
 )

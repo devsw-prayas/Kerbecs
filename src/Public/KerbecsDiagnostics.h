@@ -21,13 +21,15 @@
 #pragma once
 #include "KerbecsCompiler.h"
 
-#if defined(_DEBUG) || defined(DEBUG)
+// KERBECS_DEBUG_CHECKS (0/1) comes from KERBECS_ENABLE_DEBUG_CHECKS=ON/OFF; unset (AUTO) follows _DEBUG.
+#if defined(KERBECS_DEBUG_CHECKS)
+#define KERBECS_BUILD_DEBUG KERBECS_DEBUG_CHECKS
+#elif defined(_DEBUG)
 #define KERBECS_BUILD_DEBUG 1
-#define KERBECS_BUILD_RELEASE 0
 #else
 #define KERBECS_BUILD_DEBUG 0
-#define KERBECS_BUILD_RELEASE 1
 #endif
+#define KERBECS_BUILD_RELEASE (!KERBECS_BUILD_DEBUG)
 
 #if KERBECS_BUILD_DEBUG
 #define KERBECS_ASSERT(expr)                        \
